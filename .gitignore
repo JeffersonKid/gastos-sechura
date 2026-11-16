@@ -1,0 +1,5 @@
+node_modules
+dist
+.ocr-cache
+*.traineddata
+!public/ocr/lang/*.traineddata.gz
