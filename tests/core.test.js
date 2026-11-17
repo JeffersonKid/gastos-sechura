@@ -231,3 +231,55 @@ describe('correlativo cortado en dos líneas', () => {
     expect(extractFields('FACTURA\nDIRECCION CAL X     FS01-842\nFECHA DE FACTURA 20/10/2026     -8428\nTOTAL S/ 10.00').fields.numero).toBe('FS01-8428');
   });
 });
+
+describe('Yape con diseño nuevo (S/ leído como 51, nombre sin etiqueta, N° en otra línea)', () => {
+  const TXT = `¡Yapeaste!
+
+51150
+
+Victor Vid*
+É3 16 nov. 2026 | () 10:50 a.m.
+
+CÓDIGO DE SEGURIDAD
+
+DATOS DE LA TRANSACCIÓN
+Nro. de celular
+
+Destino
+
+Nro. de operación
+
+ar kkk 201
+Yape
+11741290`;
+  it('reconoce los 4 campos', () => {
+    const x = extractFields(TXT);
+    expect(x.fields).toMatchObject({ fecha: '2026-11-16', numero: '11741290', proveedor: 'Victor Vid*', egreso: '150.00' });
+    expect(x.tipo).toBe('YAPE');
+  });
+});
+
+describe('Transferencia Interbank (Número de solicitud en otra línea, importe bajo "Transferencia exitosa")', () => {
+  const TXT = `Interbank
+Empresas
+Constancia de operación
+Transferencia exitosa
+S/ 5,500.00
+Número de solicitud:
+57453935
+Desde:
+TRANSPORTES DIEGO DE GUADALUPE E.I.R.L.
+Corriente Soles
+**********0420
+Para:
+PAREDES DIAZ YOHANA ALEXHANDRA
+Ahorros Soles
+**********7915
+Fecha y hora:
+16/11/2026 - 10:05 AM`;
+  it('reconoce N°, beneficiario (Para), fecha e importe sin advertencias', () => {
+    const x = extractFields(TXT);
+    expect(x.fields).toMatchObject({ fecha: '2026-11-16', numero: '57453935', proveedor: 'PAREDES DIAZ YOHANA ALEXHANDRA', egreso: '5500.00' });
+    expect(x.warnings.join(' ')).not.toMatch(/TOTAL/);
+  });
+});

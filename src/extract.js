@@ -44,13 +44,29 @@ export function amountsInLine(line) {
 const EXCLUDE_AMOUNT = /SUB\s*TOTAL|IGV|I\.G\.V|IMPUESTO|GRAVAD|EXONERAD|INAFECT|GRATUIT|VUELTO|CAMBIO|DESCUENTO|DSCTO|DCTO|ICBPER|REDONDEO|RECIBIDO|PAGO CON|SU PAGO|EFECTIVO|PERCEP|DETRAC|COMISION|ITF|SALDO|IMPONIBLE|FORMA DE PAGO/;
 
 const KEYS = [
+  { re: /TRANSFERENCIA EXITOSA|OPERACION EXITOSA|PAGO EXITOSO|TRANSFERENCIA REALIZADA|PAGO REALIZADO|DEPOSITO EXITOSO/, rank: 3, next: true },
   { re: /TOTAL A PAGAR|IMPORTE TOTAL|TOTAL PAGADO|MONTO TOTAL|TOTAL VENTA|TOTAL GENERAL|IMPORTE PAGADO|MONTO PAGADO|NETO A PAGAR|TOTAL COMPROBANTE|MONTO ENVIADO|MONTO TRANSFERIDO|MONTO DE (LA )?OPERACION|IMPORTE DE (LA )?OPERACION|IMPORTE ENVIADO|YAPEASTE|PLINEASTE|TE YAPEO|ENVIASTE|TOTAL PAGO|IMPORTE DEL PAGO|MONTO DEL PAGO|MONTO ABONADO|IMPORTE TRANSFERIDO/, rank: 3, next: true },
   { re: /\bTOTAL\b/, rank: 2, next: false },
   { re: /\bMONTO\b|\bIMPORTE\b|\bPAGO\b/, rank: 1, next: true },
 ];
 
+/** Importe grande bajo '¡Yapeaste!': el OCR suele leer el 'S/' como '51', '5/' o 'S'. */
+function yapeAmount(lines) {
+  const i = lines.findIndex((l) => /YAPEASTE|PLINEASTE|ENVIASTE|TE YAPEO|TE PLINEO/.test(norm(l)));
+  if (i < 0) return null;
+  for (const l of lines.slice(i + 1, i + 4)) {
+    const s = l.trim();
+    let m = s.match(/^[S$§]\s*\/?\s*(\d{1,4}(?:[.,]\d{1,2})?)$/i);
+    if (!m && /^\d{4,5}$/.test(s)) m = s.match(/^5\s*[1\/lI|]?\s*(\d{2,4})$/);
+    if (m) { const v = parseAmount(m[1]); if (v > 0) return v; }
+  }
+  return null;
+}
+
 export function extractAmount(lines, warnings) {
   const cands = [];
+  const ya = yapeAmount(lines);
+  if (ya != null) cands.push({ v: ya, rank: 4, i: 0 });
   lines.forEach((line, i) => {
     const n = norm(line);
     if (EXCLUDE_AMOUNT.test(n)) return;
@@ -159,7 +175,20 @@ export function companyBySuffix(lines) {
   }
   return '';
 }
+/** Yape/Plin: el nombre del destinatario aparece justo bajo el importe, sin etiqueta. */
+function yapeProvider(lines) {
+  const i = lines.findIndex((l) => /YAPEASTE|PLINEASTE|ENVIASTE|TE YAPEO|TE PLINEO/.test(norm(l)));
+  if (i < 0) return '';
+  for (const l of lines.slice(i + 1, i + 6)) {
+    if (/^(DESTINO|NRO|NUMERO|MENSAJE|CODIGO|DATOS|COMISION|ORIGEN)/.test(norm(l).trim())) continue;
+    if (looksLikeName(l)) return l.trim().replace(/[\s|:]+$/, '');
+  }
+  return '';
+}
+
 export function extractProvider(lines) {
+  const yp = yapeProvider(lines);
+  if (yp) return yp;
   for (const re of [/NOMBRE DEL BENEFICIARIO|BENEFICIARIO|DESTINATARIO|PROVEEDOR/, /ENVIADO A|YAPEASTE A|PLINEASTE A|PAGADO A|TRANSFERIDO A|NOMBRE DE DESTINO/, /DESTINO/, /\bPARA\b/]) {
     const labeled = labeledValue(lines, re);
     if (labeled && looksLikeName(labeled) && !/:\s*\S/.test(labeled)) return labeled;
@@ -217,6 +246,16 @@ export function extractNumber(lines) {
     all.sort((a, b) => b.n - a.n || b.v.length - a.v.length || a.idx - b.idx);
     return all[0].v;
   }
+  for (let i = 0; i < lines.length; i++) {
+    const n = norm(lines[i]);
+    const same = n.match(/(?:NRO|NUMERO|N[°ºO])\.?\s*(?:DE\s*)?(?:OPERACION|TRANSACCION|MOVIMIENTO|SOLICITUD|REFERENCIA)\s*[:.]?\s*([A-Z0-9-]{4,})\s*$/);
+    if (same && /\d{3}/.test(same[1])) return same[1];
+    if (/(?:NRO|NUMERO|N[°ºO])\.?\s*(?:DE\s*)?(?:OPERACION|TRANSACCION|SOLICITUD|REFERENCIA)\s*[:.]?\s*$/.test(n)) {
+      // valor en una línea aparte (las columnas del voucher se leen por separado)
+      const v = lines.slice(i + 1, i + 14).find((l) => /^\d{6,12}$/.test(l.trim()) && !/^(10|20)\d{9}$/.test(l.trim()));
+      if (v) return v.trim();
+    }
+  }
   const KEY = /OPERACION|TRANSACCION|MOVIMIENTO|RECIBO|COMPROBANTE|CONSTANCIA|REFERENCIA|N[°ºO]\.?\s*:?|NRO|NUMERO|CODIGO/;
   const tokenRe = /[A-Z0-9][A-Z0-9-]{2,}/g;
   const pick = (txt) => {
@@ -232,7 +271,7 @@ export function extractNumber(lines) {
   for (let i = 0; i < lines.length; i++) {
     const n = norm(lines[i]);
     if (/\bRUC\b|TELEF|CELULAR|FECHA|HORA/.test(n) && !/OPERACION|RECIBO|CODIGO/.test(n)) continue;
-    const m = n.match(/(NUMERO DE OPERACION|NRO\.? DE OPERACION|N[°ºO]\.? DE OPERACION|CODIGO DE OPERACION|N[°ºO]\.? OPERACION|NRO\.? OPERACION|OPERACION|TRANSACCION|MOVIMIENTO|RECIBO|CONSTANCIA|COMPROBANTE|REFERENCIA|CODIGO)[^\dA-Z]*([A-Z0-9-]*)/);
+    const m = n.match(/(NUMERO DE OPERACION|NRO\.? DE OPERACION|N[°ºO]\.? DE OPERACION|CODIGO DE OPERACION|N[°ºO]\.? OPERACION|NRO\.? OPERACION|OPERACION|MOVIMIENTO|RECIBO|CONSTANCIA|COMPROBANTE|REFERENCIA|CODIGO)[^\dA-Z]*([A-Z0-9-]*)/);
     if (!m) continue;
     const after = n.slice(n.indexOf(m[1]) + m[1].length).replace(/^\s*(DE|N[°ºO]\.?|NRO\.?|NUMERO|:)+\s*/g, '');
     let v = pick(after);
@@ -344,6 +383,8 @@ export function findDuplicate(a, others) {
   }
   return null;
 }
+
+
 
 
 
