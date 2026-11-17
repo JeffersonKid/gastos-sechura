@@ -296,3 +296,34 @@ describe('concepto en lista dentro del Excel', () => {
     expect(wb.worksheets[0].getRow(4).height).toBeGreaterThanOrEqual(45);
   });
 });
+
+describe('N° de comprobante enlazado a la foto (hoja COMPROBANTES)', () => {
+  it('crea enlace interno, la foto y el enlace de vuelta; conserva todo en una segunda descarga', async () => {
+    const { readFileSync } = await import('node:fs');
+    const img = 'data:image/jpeg;base64,' + readFileSync('tests/fixtures/yape.jpg').toString('base64');
+    const mk = (n) => ({ fecha: '2026-11-09', numero: 'F002-' + n, proveedor: 'X SAC', concepto: 'Cable', egreso: '10.00', img });
+    const first = await appendRecords(null, [mk(1), mk(2)]);
+    const second = await appendRecords(Buffer.from(first.buffer), [mk(3)]);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(second.buffer);
+    const main = wb.worksheets[0];
+    const photos = wb.getWorksheet('COMPROBANTES');
+    expect(photos).toBeTruthy();
+    // los tres N° son enlaces a la hoja de fotos
+    for (const [r, n] of [[4, 1], [5, 2], [6, 3]]) {
+      const v = main.getCell(`C${r}`).value;
+      expect(v.text).toBe('F002-' + n);
+      expect(v.hyperlink).toMatch(/^#'COMPROBANTES'!A\d+$/);
+    }
+    expect(photos.getImages().length).toBe(3);
+    // el enlace apunta al encabezado del bloque correcto y éste vuelve a la fila
+    const target = Number(main.getCell('C5').value.hyperlink.match(/A(\d+)$/)[1]);
+    expect(photos.getCell(`A${target}`).value).toBe('Ítem 02');
+    expect(photos.getCell(`D${target}`).value.hyperlink).toBe("#'Gastos'!C5");
+    // bloques sin superponerse
+    const t1 = Number(main.getCell('C4').value.hyperlink.match(/A(\d+)$/)[1]);
+    const t3 = Number(main.getCell('C6').value.hyperlink.match(/A(\d+)$/)[1]);
+    expect(target - t1).toBeGreaterThan(10);
+    expect(t3 - target).toBeGreaterThan(10);
+  });
+});

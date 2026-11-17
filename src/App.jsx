@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+﻿import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { saveItem, deleteItem, allItems, setMeta, getMeta, clearAll } from './db.js';
 import { extractFields, findDuplicate } from './extract.js';
 import { firebaseConfig } from './firebase-config.js';
@@ -41,6 +41,7 @@ function Thumb({ blob, onOpen }) {
 
 function ItemRow({ item, itemNo, dup, onChange, onDelete, onOpen, onRetry }) {
   const [edit, setEdit] = useState(false);
+  const photoUrl = useObjectUrl(item.image);
   const f = item.fields;
   const st = item.status === 'done' ? item.result : item.status;
   const set = (k, v) => onChange({ fields: { ...f, [k]: v } });
@@ -51,7 +52,7 @@ function ItemRow({ item, itemNo, dup, onChange, onDelete, onOpen, onRetry }) {
       <td data-label="Ítem" className="itemno">{itemNo ? <b>{pad(itemNo)}</b> : <span className="muted" title="Sin ítem hasta que tenga importe válido y no sea duplicado sin autorizar">—</span>}</td>
       <td data-label="Comprobante"><Thumb blob={item.image} onOpen={onOpen} /><div className="fname">{item.name}</div></td>
       <td data-label="Fecha">{cell('fecha', 'date')}</td>
-      <td data-label="N° comprobante">{cell('numero')}</td>
+      <td data-label="N° comprobante">{!edit && photoUrl && item.fields.numero ? <button className="linklike" title="Ver la foto del comprobante" onClick={() => onOpen(photoUrl)}>{item.fields.numero}</button> : cell('numero')}</td>
       <td data-label="Beneficiario / proveedor">{cell('proveedor')}</td>
       <td data-label="Concepto">{edit ? <textarea rows={Math.max(3, (f.concepto || '').split('\n').length)} value={f.concepto || ''} onChange={(e) => set('concepto', e.target.value)} /> : <span className="concept">{f.concepto}</span>}</td>
       <td data-label="Egreso (-)" className="num">{cell('egreso', 'text', { inputMode: 'decimal' })}</td>
@@ -447,6 +448,13 @@ export default function App() {
     return history.filter((e) => (hf === 'todos' || (hf === 'pendiente' ? !e.exported : e.exported)) && (!k || [e.numero, e.proveedor, e.concepto, e.fecha, fmtDate(e.fecha), e.egreso, e.item, e.archivo].join(' ').toLowerCase().includes(k)));
   }, [history, q, hf]);
   const shownTotal = shown.reduce((s, e) => s + (parseFloat(e.egreso) || 0), 0);
+  const dayKey = (ms) => { const d = new Date(ms); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+  const dayLabel = (ms) => { const s = new Date(ms).toLocaleDateString('es-PE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' }); return s.charAt(0).toUpperCase() + s.slice(1); };
+  const dayStats = useMemo(() => {
+    const m = {};
+    for (const e of shown) { const k = dayKey(e.registeredAt); (m[k] ||= { n: 0, total: 0 }); m[k].n++; m[k].total += parseFloat(e.egreso) || 0; }
+    return m;
+  }, [shown]);
   const fmtStamp = (ms) => new Date(ms).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' });
   const csv = () => {
     const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""').replace(/\n/g, ' | ') + '"';
@@ -566,6 +574,7 @@ export default function App() {
         <section className="card" id="historial">
           <div className="sec-head">
             <h2>Historial de gastos registrados ({history.length})</h2>
+            <span className={user ? 'chip ready' : 'chip loading'}>{user ? '☁ Cuenta: ' + user.email : 'Sin cuenta: solo este dispositivo'}</span>
             <button className="btn" disabled={!shown.length} onClick={csv}>DESCARGAR HISTORIAL (CSV)</button>
           </div>
           {history.length === 0 ? (
@@ -584,19 +593,24 @@ export default function App() {
                 <table className="small">
                   <thead><tr><th>Ítem</th><th>Foto</th><th>Registrado</th><th>Fecha</th><th>N°</th><th>Beneficiario</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
                   <tbody>
-                    {shown.map((e) => (
-                      <tr key={e.hid}>
+                    {shown.map((e, idx) => (
+                      <Fragment key={e.hid}>
+                      {(idx === 0 || dayKey(shown[idx - 1].registeredAt) !== dayKey(e.registeredAt)) && (
+                        <tr className="dayrow"><td colSpan={10}><b>{dayLabel(e.registeredAt)}</b> <span className="muted">· {dayStats[dayKey(e.registeredAt)].n} gasto(s) · {money(dayStats[dayKey(e.registeredAt)].total)}</span></td></tr>
+                        )}
+                      <tr>
                         <td data-label="Ítem" className="itemno"><b>{histNo(e) ? pad(histNo(e)) : '—'}</b></td>
                         <td data-label="Foto">{e.img ? <img className="thumb" src={e.img} alt={`Comprobante ítem ${histNo(e) ? pad(histNo(e)) : ''}`} onClick={() => open(e.img)} /> : <span className="muted">sin foto</span>}</td>
                         <td data-label="Registrado">{fmtStamp(e.registeredAt)}</td>
                         <td data-label="Fecha">{fmtDate(e.fecha)}</td>
-                        <td data-label="N°">{e.numero}</td>
+                        <td data-label="N°">{e.img ? <button className="linklike" title="Ver la foto del comprobante" onClick={() => open(e.img)}>{e.numero || 'Ver foto'}</button> : e.numero}</td>
                         <td data-label="Beneficiario">{e.proveedor}</td>
                         <td data-label="Concepto"><span className="concept">{e.concepto}</span></td>
                         <td data-label="Egreso" className="num">{money(e.egreso)}</td>
                         <td data-label="Estado"><span className={`badge ${e.exported ? 'OK' : 'REVISAR'}`}>{e.exported ? 'En Excel' : 'Pendiente de descargar'}</span></td>
                         <td><button className="btn sm danger" onClick={() => removeEntry(e)}>Quitar</button></td>
                       </tr>
+                    </Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -626,3 +640,4 @@ export default function App() {
     </div>
   );
 }
+

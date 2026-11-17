@@ -165,6 +165,60 @@ function insertRowAt(ws, at) {
   });
 }
 
+const PHOTO_SHEET = 'COMPROBANTES';
+const colLetter = (n) => {
+  let s = '';
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+};
+
+/** Ancho/alto de un JPEG (data URL) leyendo su cabecera. */
+export function jpegSize(dataUrl) {
+  try {
+    const b = atob(dataUrl.split(',')[1]);
+    let i = 2;
+    while (i < b.length) {
+      if (b.charCodeAt(i) !== 0xff) { i++; continue; }
+      const m = b.charCodeAt(i + 1);
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        return { h: (b.charCodeAt(i + 5) << 8) | b.charCodeAt(i + 6), w: (b.charCodeAt(i + 7) << 8) | b.charCodeAt(i + 8) };
+      }
+      i += 2 + ((b.charCodeAt(i + 2) << 8) | b.charCodeAt(i + 3));
+    }
+  } catch { /* sin medidas */ }
+  return null;
+}
+
+/**
+ * Pone la foto del comprobante en la hoja COMPROBANTES y convierte el N° de la fila en un
+ * enlace que lleva directo a esa foto (y la foto trae un enlace de vuelta a la fila).
+ */
+function attachPhoto(wb, ws, cols, row, rec, itemLabel) {
+  if (!rec.img) return;
+  let cs = wb.getWorksheet(PHOTO_SHEET);
+  if (!cs) {
+    cs = wb.addWorksheet(PHOTO_SHEET);
+    [14, 52, 18, 26].forEach((w, i) => { cs.getColumn(i + 1).width = w; });
+  }
+  const start = cs.rowCount ? cs.rowCount + 2 : 1;
+  const size = jpegSize(rec.img) || { w: 800, h: 1000 };
+  const w = Math.min(640, size.w);
+  const h = Math.round((w * size.h) / size.w);
+  const hdr = cs.getRow(start);
+  hdr.getCell(1).value = `Ítem ${itemLabel}`;
+  hdr.getCell(1).font = { bold: true, size: 12, color: { argb: 'FF0B2A5B' } };
+  hdr.getCell(2).value = [rec.numero, rec.proveedor].filter(Boolean).join(' · ');
+  hdr.getCell(2).font = { bold: true };
+  hdr.getCell(4).value = { text: '← Volver al registro', hyperlink: `#'${ws.name}'!${colLetter(cols.numero)}${row.number}` };
+  hdr.getCell(4).font = { color: { argb: 'FF0563C1' }, underline: true };
+  const id = wb.addImage({ base64: rec.img, extension: 'jpeg' });
+  cs.addImage(id, { tl: { col: 0, row: start }, ext: { width: w, height: h } });
+  cs.getRow(start + Math.ceil(h / 20) + 1).getCell(1).value = ' '; // reserva el espacio ocupado por la foto
+  const c = row.getCell(cols.numero);
+  c.value = { text: rec.numero || 'Ver foto', hyperlink: `#'${PHOTO_SHEET}'!A${start}` };
+  c.font = { ...(c.font || {}), color: { argb: 'FF0563C1' }, underline: true };
+}
+
 const padItem = (n, width) => String(n).padStart(width, '0');
 
 /**
@@ -235,6 +289,7 @@ export async function appendRecords(baseBuffer, records) {
     const n = parseFloat(rec.egreso);
     eg.value = Number.isFinite(n) ? n : null;
     eg.numFmt = MONEY;
+    attachPhoto(wb, ws, cols, row, rec, itemIsNumber ? String(next) : padItem(next, width));
     row.commit?.();
     next++;
     target++;
@@ -242,4 +297,5 @@ export async function appendRecords(baseBuffer, records) {
   const buffer = await wb.xlsx.writeBuffer();
   return { buffer, added: records.length, firstRow };
 }
+
 

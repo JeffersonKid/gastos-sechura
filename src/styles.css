@@ -94,3 +94,6 @@ td textarea { width: 100%; min-width: 200px; padding: 7px; border: 1.5px solid #
 .authbox .tabs .on { color: var(--navy); border-bottom-color: var(--navy); }
 .authbox .msg { margin: 0; cursor: default; }
 @media (max-width: 820px) { .hdr-right { align-items: flex-start; width: 100%; } }
+.linklike { background: none; border: 0; padding: 0; font: inherit; color: #0563c1; text-decoration: underline; cursor: pointer; text-align: left; }
+tr.dayrow td { background: #e8eefb; color: var(--navy); border-top: 2px solid var(--navy2); padding: 10px 8px; font-size: 14px; display: table-cell; }
+@media (max-width: 820px) { tr.dayrow { background: #e8eefb; border: 0; padding: 0; margin: 14px 0 6px; } tr.dayrow td { display: block; } tr.dayrow td::before { content: none; } }

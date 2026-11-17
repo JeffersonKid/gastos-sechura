@@ -1,6 +1,6 @@
 ﻿// Service Worker: deja la app (y el motor OCR, tras su primer uso) disponible sin conexion.
 // Para publicar una version nueva, cambie VERSION.
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = 'sechura-' + VERSION;
 const BASE = new URL('./', self.location).href;
 
@@ -36,5 +36,6 @@ self.addEventListener('fetch', (e) => {
     try { const r = await fetch(req); if (r.ok) cache.put(req, r.clone()); return r; } catch { return Response.error(); }
   })());
 });
+
 
 
