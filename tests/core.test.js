@@ -195,3 +195,39 @@ describe('excel', () => {
   });
   it('shiftFormula', () => expect(shiftFormula('SUM(G5:G6)+G9', 7)).toBe('SUM(G5:G7)+G10'));
 });
+
+describe('factura real NORHOGAR (dos RUC, logo, tabla con códigos)', () => {
+  const TXT = `GUENTE                                                                                                  RUC : 20525524435
+RUC                20602520146                                                                  A
+DENOMINACION             TRANSPORTES DIEGO DE GUADALUPE ELR.L.                                               FACTURA ELECTRÓNICA
+FECHA DE FACTURA        20/10/2026            MONEDA              Soles                        FS01-8428
+FECHA DE VENCIMIENTO      20/10/2026
+CANT_UdM     CÓDIGO         DESCRIPCIÓN                                                       iu     P/U__ SUBTOTAL
+50.000 Unidades — RAPMORTARO0O1  RAPIMIX MORTERO TARRAJEQ TIPO MS (MORADO)                              S/1144 §/1350  §/51203
+45.000 Unidades  PEGAMECHO0001 — PEGAMENTO CHEMAYOLIC GRIS * 25 KIL                                   $/1525  $/1800  $/686.44
+5000 Unidades — VESOMRO000001  YESOMORROPE 08 KIL                                            $/424  §/500 s/2119
+FORMA DE PAGO                               (conTaDo]                                                                                             BASE IMPONIBLE                                          $/1,322.03
+MONTO EN LETRAS                            MIL QUINIENTOS SESENTA CON 00/100 SOLES                                                 Iv                                                             §1231.91
+TOTAL                       $/1,560.00
+2h   MATERIALES DE  NORHOGAR SRL                                      ¡.. SOMOS tu mejor ALIADO...en tu`;
+  it('proveedor = emisor (no el cliente), concepto = lo comprado, egreso = TOTAL', () => {
+    const r = extractFields(TXT).fields;
+    expect(r.proveedor).toBe('NORHOGAR SRL');
+    expect(r.numero).toBe('FS01-8428');
+    expect(r.fecha).toBe('2026-10-20');
+    expect(r.egreso).toBe('1560.00');
+    expect(r.concepto).toBe('RAPIMIX MORTERO TARRAJEQ TIPO MS (MORADO); PEGAMENTO CHEMAYOLIC GRIS * 25 KIL; YESOMORROPE 08 KIL');
+  });
+});
+
+describe('N° con dígito perdido en una lectura', () => {
+  it('prefiere la lectura completa', () => {
+    expect(extractFields('FACTURA ELECTRONICA\nFS01-842\nFS01-8428\nTOTAL S/ 10.00').fields.numero).toBe('FS01-8428');
+  });
+});
+
+describe('correlativo cortado en dos líneas', () => {
+  it('une FS01-842 con -8428', () => {
+    expect(extractFields('FACTURA\nDIRECCION CAL X     FS01-842\nFECHA DE FACTURA 20/10/2026     -8428\nTOTAL S/ 10.00').fields.numero).toBe('FS01-8428');
+  });
+});

@@ -41,7 +41,7 @@ export function amountsInLine(line) {
   return out;
 }
 
-const EXCLUDE_AMOUNT = /SUB\s*TOTAL|IGV|I\.G\.V|IMPUESTO|GRAVAD|EXONERAD|INAFECT|GRATUIT|VUELTO|CAMBIO|DESCUENTO|DSCTO|DCTO|ICBPER|REDONDEO|RECIBIDO|PAGO CON|SU PAGO|EFECTIVO|PERCEP|DETRAC|COMISION|ITF|SALDO/;
+const EXCLUDE_AMOUNT = /SUB\s*TOTAL|IGV|I\.G\.V|IMPUESTO|GRAVAD|EXONERAD|INAFECT|GRATUIT|VUELTO|CAMBIO|DESCUENTO|DSCTO|DCTO|ICBPER|REDONDEO|RECIBIDO|PAGO CON|SU PAGO|EFECTIVO|PERCEP|DETRAC|COMISION|ITF|SALDO|IMPONIBLE|FORMA DE PAGO/;
 
 const KEYS = [
   { re: /TOTAL A PAGAR|IMPORTE TOTAL|TOTAL PAGADO|MONTO TOTAL|TOTAL VENTA|TOTAL GENERAL|IMPORTE PAGADO|MONTO PAGADO|NETO A PAGAR|TOTAL COMPROBANTE|MONTO ENVIADO|MONTO TRANSFERIDO|MONTO DE (LA )?OPERACION|IMPORTE DE (LA )?OPERACION|IMPORTE ENVIADO|YAPEASTE|PLINEASTE|TE YAPEO|ENVIASTE|TOTAL PAGO|IMPORTE DEL PAGO|MONTO DEL PAGO|MONTO ABONADO|IMPORTE TRANSFERIDO/, rank: 3, next: true },
@@ -93,7 +93,7 @@ export function extractDate(lines) {
   const cands = [];
   lines.forEach((line, i) => {
     const n = norm(line);
-    if (/VENCIMIENTO|NACIMIENTO|VENCE|VALIDO HASTA/.test(n)) return;
+    if (/VENC|NACIMIENTO|VALIDO HASTA/.test(n)) return;
     const bonus = /FECHA|EMISION|OPERACION|EMITID/.test(n) ? 2 : 0;
     const add = (v, extra = 0) => v && cands.push({ v, score: bonus + extra, i });
     for (const m of n.matchAll(/(?<!\d)(20\d{2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,2})(?!\d)/g)) add(iso(+m[1], +m[2], +m[3]), 1);
@@ -112,7 +112,7 @@ export function extractDate(lines) {
   return cands[0].v;
 }
 
-const BLACK_NAME = /FACTURA|BOLETA|ELECTRONIC|\bRUC\b|TICKET|DIRECCION|^AV\b|^JR\b|^CALLE|^PSJE|TELEF|DOCUMENTO|CLIENTE|SENOR|FECHA|HORA|REPRESENTACION|IMPRESA|SUNAT|GRACIAS|PAGINA|COMPROBANTE|NOTA DE|\bN[°ºO]\b|^LIMA|^PIURA|^TEL|^CEL|WWW\.|@|VENTA|COPIA|ORIGINAL|OPERACION|YAPE|PLIN/;
+const BLACK_NAME = /FACTURA|BOLETA|\bRUC\b|TICKET|DIRECCION|^AV\b|^JR\b|^CALLE|^PSJE|TELEF|DOCUMENTO|CLIENTE|SENOR|FECHA|HORA|REPRESENTACION|IMPRESA|SUNAT|GRACIAS|PAGINA|COMPROBANTE|NOTA DE|\bN[°ºO]\b|^LIMA|^PIURA|^PERU|^SECHURA|MATERIALES DE|DENOMINACION|MONEDA|VENCIMIENTO|DESCRIPCION|UNIDADES|^TEL|^CEL|WWW\.|@|VENTA|COPIA|ORIGINAL|OPERACION|YAPE|PLIN/;
 
 function looksLikeName(s) {
   const letters = (s.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length;
@@ -139,15 +139,40 @@ function labeledValue(lines, labelRe, { requireName = true } = {}) {
   return '';
 }
 
+const SUFFIX_END = /^(.*?)\s+(S\.?\s?R\.?\s?L\.?|S\.?\s?A\.?\s?C\.?|E\.?\s?I\.?\s?R\.?\s?L\.?|S\.?\s?A\.?)$/;
+const CLIENT_LINE = /DENOMINACION|CLIENTE|SENOR|ADQUIRIENTE|DESTINATARIO|DIRECCION|RAZON SOCIAL|NOMBRE|REPRESENTANTE/;
+const GOOD_TOKEN = /^[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ&\-.]{2,}$/;
+
+/** Nombre de empresa terminado en S.A.C. / S.R.L. / E.I.R.L. / S.A. (ignora la línea del cliente). */
+export function companyBySuffix(lines) {
+  for (const line of lines) {
+    if (CLIENT_LINE.test(norm(line)) || /UNIDADES|\d[.,]\d{2}/.test(line)) continue;
+    for (const seg of line.split(/\s{2,}|\|/)) {
+      const m = seg.trim().replace(/[\s,;:]+$/, '').match(SUFFIX_END);
+      if (!m) continue;
+      const toks = m[1].split(/\s+/);
+      while (toks.length && !GOOD_TOKEN.test(toks[0])) toks.shift();
+      if (!toks.length || toks.join('').length < 3) continue;
+      const name = cleanName(`${toks.join(' ')} ${m[2]}`);
+      if (looksLikeName(name)) return name;
+    }
+  }
+  return '';
+}
 export function extractProvider(lines) {
   for (const re of [/NOMBRE DEL BENEFICIARIO|BENEFICIARIO|DESTINATARIO|PROVEEDOR/, /ENVIADO A|YAPEASTE A|PLINEASTE A|PAGADO A|TRANSFERIDO A|NOMBRE DE DESTINO/, /DESTINO/, /\bPARA\b/]) {
     const labeled = labeledValue(lines, re);
     if (labeled && looksLikeName(labeled) && !/:\s*\S/.test(labeled)) return labeled;
   }
 
+  const byName = companyBySuffix(lines);
+  if (byName) return byName;
+
   const rucIdx = [];
   lines.forEach((l, i) => { if (/\b(10|15|17|20)\d{9}\b/.test(l.replace(/[\s-]/g, '')) && /RUC/i.test(l)) rucIdx.push(i); });
-  const isClientCtx = (i) => lines.slice(Math.max(0, i - 3), i + 1).some((l) => /CLIENTE|SENOR|ADQUIRIENTE|DESTINATARIO/.test(norm(l)));
+  const isClientCtx = (i) =>
+    lines.slice(Math.max(0, i - 3), i + 1).some((l) => /CLIENTE|SENOR|ADQUIRIENTE|DESTINATARIO/.test(norm(l))) ||
+    lines.slice(i, i + 3).some((l) => /DENOMINACION|RAZON SOCIAL|NOMBRE|APELLIDOS/.test(norm(l)));
   for (const i of rucIdx) {
     if (isClientCtx(i)) continue;
     const pre = lines[i].split(/RUC/i)[0];
@@ -168,11 +193,29 @@ function fixSerie(s) {
 }
 
 export function extractNumber(lines) {
-  for (const line of lines) {
+  // Puede haber varias lecturas del mismo número (dos pasadas de OCR): gana la más repetida y, si empatan, la más completa.
+  const found = new Map();
+  lines.forEach((line, idx) => {
     const n = norm(line).replace(/[–—]/g, '-');
-    if (/\bRUC\b/.test(n) && !SERIE_RE.test(n)) continue;
+    if (/\bRUC\b/.test(n) && !SERIE_RE.test(n)) return;
     const m = n.match(SERIE_RE);
-    if (m && /\d/.test(m[1] + m[2])) return `${fixSerie(m[1])}-${m[2]}`;
+    if (m && /\d/.test(m[1] + m[2])) {
+      let corr = m[2];
+      // El OCR a veces corta el correlativo y deja el resto en la línea siguiente: "FS01-842" / "-8428".
+      const tail = (lines[idx + 1] || '').match(/(?:^|\s)-\s*(\d{3,9})\s*$/);
+      if (tail && tail[1].startsWith(corr) && tail[1].length > corr.length) corr = tail[1];
+      const v = `${fixSerie(m[1])}-${corr}`;
+      const e = found.get(v) || { v, n: 0, idx };
+      e.n++;
+      found.set(v, e);
+    }
+  });
+  if (found.size) {
+    const all = [...found.values()];
+    // una lectura que es prefijo de otra más larga (dígito perdido) cuenta a favor de la larga
+    for (const a of all) for (const b of all) if (a !== b && b.v.startsWith(a.v) && b.v.length > a.v.length) b.n += a.n;
+    all.sort((a, b) => b.n - a.n || b.v.length - a.v.length || a.idx - b.idx);
+    return all[0].v;
   }
   const KEY = /OPERACION|TRANSACCION|MOVIMIENTO|RECIBO|COMPROBANTE|CONSTANCIA|REFERENCIA|N[°ºO]\.?\s*:?|NRO|NUMERO|CODIGO/;
   const tokenRe = /[A-Z0-9][A-Z0-9-]{2,}/g;
@@ -206,19 +249,46 @@ export function extractConcept(lines) {
   const hi = lines.findIndex((l) => /DESCRIPCION|DETALLE|PRODUCTO|ARTICULO/.test(norm(l)) && /CANT|P\.?\s?UNIT|IMPORTE|PRECIO|UND|UNID|TOTAL/.test(norm(l)) || /^(DESCRIPCION|DETALLE)\s*$/.test(norm(l)));
   if (hi < 0) return '';
   const items = [];
-  for (let j = hi + 1; j < lines.length && items.length < 4; j++) {
+  let qtyFirst = null; // ¿las filas empiezan con cantidad/código? Entonces las líneas sin cantidad continúan la fila anterior.
+  for (let j = hi + 1; j < lines.length && items.length < 8; j++) {
     const n = norm(lines[j]);
-    if (/SUB\s*TOTAL|\bTOTAL\b|^SON\b|OP\.? ?GRAVADA|\bIGV\b|IMPORTE|FORMA DE PAGO|OBSERV/.test(n)) break;
-    const c = lines[j]
-      .replace(/\d+[.,]\d{2,}/g, ' ')
-      .replace(/^\s*\d+([.,]\d+)?\s*(UND|UNID|UNIDAD|NIU|ZZ|KG|M|M2|M3|BLS|BOLSA|GLN|PZA|SERV)?\b\.?\s+/i, '')
-      .replace(/[|]/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .replace(/\s+\d+$/, '')
-      .trim();
+    if (/SUB\s*TOTAL|\bTOTAL\b|^SON\b|OP\.? ?GRAVADA|\bIGV\b|IMPORTE|FORMA DE PAGO|MONTO EN LETRAS|BASE IMPONIBLE|OBSERV|VALOR (DE )?VENTA|OPERACIONES|ANTICIPO|DSCTO\.? S\/|INFORMACION|REPRESENTACION|RESUMEN/.test(n)) break;
+    const start = rowStarts(lines[j]);
+    if (qtyFirst === null) qtyFirst = start;
+    const c = cleanItem(lines[j]);
+    if (qtyFirst && !start && items.length) { if (c && !/^[\d.,\s-]+$/.test(c)) items[items.length - 1] += ' ' + c; continue; }
     if ((c.match(/[A-Za-zÁÉÍÓÚÑ]/g) || []).length >= 3) items.push(c);
   }
-  return items.join('; ').slice(0, 160);
+  return items.join('; ').slice(0, 300);
+}
+
+const UNITS = '(?:METROS?|UNIDADES|UNIDAD|UNDS?|UNID|NIU|ZZ|KGS?|KILOS?|M2|M3|ML|M|BLS|BOLSAS?|GLN|GALON(?:ES)?|PZAS?|PIEZAS?|SERV|SERVICIO|LTS?|LITROS?|CJA|CAJAS?|ROLLOS?|PAR|DOC|MLL|MILLAR|SACOS?|BALDES?|JGO|JUEGO)';
+const isMoney = (s) => /^[S$§Ss5]\/?\d[\d.,]*$|^[S$§Ss]\/$|^-?\d+[.,]\d{2}$/.test(s);
+const isCode = (s) => s.length >= 6 && /^[A-Z0-9-]+$/.test(s) && /\d/.test(s) && /[A-Z]/.test(s);
+
+const rowStarts = (line) => {
+  const c = line.replace(/[—–_|]+/g, ' ').trim();
+  return new RegExp(`^\\d+(?:[.,]\\d{1,3})?\\s+${UNITS}\\b`, 'i').test(c) || new RegExp(`^${UNITS}\\b`, 'i').test(c) || isCode(c.split(/\s+/)[0] || '');
+};
+
+/** Deja solo la descripción de una fila de detalle (sin cantidad, unidad, código ni precios). */
+export function cleanItem(line) {
+  let c = line.replace(/[—–_|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const q = new RegExp(`^\\d+(?:[.,]\\d{1,3})?\\s+(?:${UNITS}\\b\\.?\\s+)?`, 'i');
+  if (q.test(c)) c = c.replace(q, '');
+  else {
+    const u = new RegExp(`^${UNITS}\\b\\.?\\s+`, 'i');
+    const rest = c.replace(u, '');
+    if (u.test(c) && isCode(rest.split(' ')[0])) c = rest;
+  }
+  const t = c.split(' ');
+  if (t.length > 1 && isCode(t[0])) t.shift();
+  while (t.length > 1) {
+    const last = t[t.length - 1], prev = t[t.length - 2];
+    if (isMoney(last) || /^(?:UN|UND|NIU)\d{0,4}$/i.test(last) || (/^\d{3,}$/.test(last) && isMoney(prev))) t.pop();
+    else break;
+  }
+  return t.join(' ').trim();
 }
 
 export function detectType(text) {
@@ -274,6 +344,8 @@ export function findDuplicate(a, others) {
   }
   return null;
 }
+
+
 
 
 

@@ -1,5 +1,6 @@
-// OCR local con Tesseract.js (motor, worker e idiomas servidos desde esta misma web: sin CDN, sin APIs).
+﻿// OCR local con Tesseract.js (motor, worker e idiomas servidos desde esta misma web: sin CDN, sin APIs).
 import { createWorker } from 'tesseract.js';
+import { pdfItemsToText } from './pdftext.js';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 const abs = (p) => new URL(import.meta.env.BASE_URL + p, location.href).href;
@@ -75,13 +76,12 @@ async function ocrCanvas(canvas) {
   const w = await getWorker();
   const blob = await canvasBlob(canvas, 'image/png');
   await w.setParameters({ tessedit_pageseg_mode: '3' });
-  let r = (await w.recognize(blob)).data;
-  if (r.confidence < 60) {
-    await w.setParameters({ tessedit_pageseg_mode: '6' });
-    const r2 = (await w.recognize(blob)).data;
-    if (r2.confidence > r.confidence) r = r2;
-  }
-  return { text: r.text, confidence: r.confidence };
+  const r = (await w.recognize(blob)).data;
+  if (r.confidence >= 90) return { text: r.text, confidence: r.confidence };
+  // Segunda lectura con otro modo de segmentación: se juntan ambos textos (logos/columnas se leen distinto).
+  await w.setParameters({ tessedit_pageseg_mode: '6' });
+  const r2 = (await w.recognize(blob)).data;
+  return { text: r.text + '\n' + r2.text, confidence: Math.max(r.confidence, r2.confidence) };
 }
 
 async function pdfTextOrCanvases(file) {
@@ -95,14 +95,7 @@ async function pdfTextOrCanvases(file) {
   for (let p = 1; p <= pages; p++) {
     const page = await pdf.getPage(p);
     const tc = await page.getTextContent();
-    const rows = new Map();
-    for (const it of tc.items) {
-      if (!it.str || !it.str.trim()) continue;
-      const y = Math.round(it.transform[5] / 3);
-      const key = [...rows.keys()].find((k) => Math.abs(k - y) <= 1) ?? y;
-      (rows.get(key) || rows.set(key, []).get(key)).push({ x: it.transform[4], s: it.str });
-    }
-    text += [...rows.entries()].sort((a, b) => b[0] - a[0]).map(([, r]) => r.sort((a, b) => a.x - b.x).map((i) => i.s).join(' ')).join('\n') + '\n';
+    text += pdfItemsToText(tc.items) + '\n';
     const vp = page.getViewport({ scale: Math.min(3, 2200 / Math.max(page.view[2], page.view[3])) });
     const c = document.createElement('canvas');
     c.width = vp.width; c.height = vp.height;
@@ -135,3 +128,4 @@ export async function recognizeFile(file, progress) {
   const r = await ocrCanvas(canvas);
   return { ...r, image, method: 'OCR' };
 }
+
