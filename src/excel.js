@@ -281,8 +281,8 @@ export async function appendRecords(baseBuffer, records) {
       cc.value = rec.concepto || null;
       cc.alignment = { ...(cc.alignment || {}), wrapText: true, vertical: 'top' };
       const w = ws.getColumn(cols.concepto).width || 40;
-      const nLines = (rec.concepto || '').split('\n').reduce((s, l) => s + Math.max(1, Math.ceil(l.length / (w * 1.05))), 0);
-      if (nLines > 1) row.height = Math.max(row.height || 15, 15 * nLines);
+      const nLines = (rec.concepto || '').split('\n').reduce((s, l) => s + Math.max(1, Math.ceil(l.length / (w * 0.78))), 0);
+      if (nLines > 1) row.height = Math.max(row.height || 15, 15 * nLines + 6);
     }
     if (cols.ingresos) row.getCell(cols.ingresos).value = null;
     const eg = row.getCell(cols.egresos);
