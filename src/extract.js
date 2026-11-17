@@ -372,7 +372,7 @@ const keyNum = (s) => {
 const keyName = (s) => norm(s).replace(/[^A-Z0-9]/g, '');
 
 /** ¿El comprobante `a` coincide con alguno de `others`? Devuelve descripción o null. */
-export function findDuplicate(a, others) {
+export function matchRecord(a, others) {
   const an = keyNum(a.numero), ap = keyName(a.proveedor), amt = Number(a.egreso);
   for (const o of others) {
     const on = keyNum(o.numero), op = keyName(o.proveedor), omt = Number(o.egreso);
@@ -380,10 +380,16 @@ export function findDuplicate(a, others) {
     const sameDate = !!a.fecha && a.fecha === o.fecha;
     const sameNum = !!an && an === on;
     const sameProv = !!ap && ap === op;
-    if ((sameNum && sameAmt) || (sameNum && sameDate) || (sameDate && sameAmt && sameProv)) return o.origen || 'registro anterior';
+    if ((sameNum && sameAmt) || (sameNum && sameDate) || (sameDate && sameAmt && sameProv)) return o;
   }
   return null;
 }
+
+export function findDuplicate(a, others) {
+  const m = matchRecord(a, others);
+  return m ? m.origen || 'registro anterior' : null;
+}
+
 
 
 

@@ -100,6 +100,7 @@ function scan(ws, headerRow, cols) {
     if (Number.isFinite(it)) maxItem = Math.max(maxItem, it);
     records.push({
       origen: `Excel, fila ${r}`,
+      item: Number.isFinite(it) ? it : null,
       fecha: cellIsoDate(row.getCell(cols.fecha)),
       numero: cellText(row.getCell(cols.numero)).trim(),
       proveedor: cellText(row.getCell(cols.proveedor)).trim(),

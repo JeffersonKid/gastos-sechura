@@ -1,6 +1,6 @@
 ﻿import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { saveItem, deleteItem, allItems, setMeta, getMeta, clearAll } from './db.js';
-import { extractFields, findDuplicate } from './extract.js';
+import { extractFields, matchRecord, findDuplicate } from './extract.js';
 import { firebaseConfig } from './firebase-config.js';
 import { compressDataUrl, bufToB64, b64ToBuf } from './img.js';
 
@@ -39,7 +39,7 @@ function Thumb({ blob, onOpen }) {
   return url ? <img className="thumb" src={url} alt="Comprobante" onClick={() => onOpen(url)} /> : <div className="thumb empty" />;
 }
 
-function ItemRow({ item, itemNo, dup, onChange, onDelete, onOpen, onRetry }) {
+function ItemRow({ item, itemNo, dup, photoOnly, onPhotoOnly, onChange, onDelete, onOpen, onRetry }) {
   const [edit, setEdit] = useState(false);
   const photoUrl = useObjectUrl(item.image);
   const f = item.fields;
@@ -64,6 +64,7 @@ function ItemRow({ item, itemNo, dup, onChange, onDelete, onOpen, onRetry }) {
         {dup && (
           <div className="dup">
             ADVERTENCIA: ESTE COMPROBANTE PODRÍA ESTAR REGISTRADO ANTERIORMENTE <small>({dup})</small>
+            {photoOnly && <button className="btn sm photo" onClick={onPhotoOnly} title="No agrega una fila nueva: solo guarda la foto y la vincula a la fila que ya está en el Excel">SOLO GUARDAR LA FOTO (ya está en el Excel)</button>}
             <label><input type="checkbox" checked={!!item.dupOk} onChange={(e) => onChange({ dupOk: e.target.checked })} /> Registrar de todos modos</label>
           </div>
         )}
@@ -149,6 +150,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [q, setQ] = useState('');
   const [hf, setHf] = useState('todos');
+  const [cq, setCq] = useState('');
   const [running, setRunning] = useState(false);
   const [ocrState, setOcrState] = useState('idle');
   const [msg, setMsg] = useState(null);
@@ -320,18 +322,34 @@ export default function App() {
   const retry = (it) => (it.file ? patch(it.id, { status: 'pending', error: null }) : setMsg({ t: 'warn', s: `Para reintentar "${it.name}", elimínelo y vuelva a subirlo.` }));
 
   // Duplicados: contra el Excel importado, el historial y otros de la lista
-  const dups = useMemo(() => {
+  const { dups, dupRecs } = useMemo(() => {
     const out = {};
+    const recs = {};
     const base = [...(excel?.info?.records || []), ...history.map((r) => ({ ...r, origen: `historial (registrado el ${new Date(r.registeredAt).toLocaleDateString('es-PE')})` }))];
     const seen = [];
     for (const it of items) {
       if (it.status !== 'done') continue;
-      const d = findDuplicate(it.fields, [...base, ...seen]);
-      if (d) out[it.id] = d;
+      const m = matchRecord(it.fields, [...base, ...seen]);
+      if (m) { out[it.id] = m.origen || 'registro anterior'; recs[it.id] = m; }
       seen.push({ ...it.fields, origen: `otro comprobante de la lista (${it.name})` });
     }
-    return out;
+    return { dups: out, dupRecs: recs };
   }, [items, excel, history]);
+  // ¿Este comprobante ya está en el Excel pero aún no tiene su foto guardada en el historial?
+  const canPhotoOnly = (it) => !!dupRecs[it.id] && String(dupRecs[it.id].origen || '').startsWith('Excel') && !findDuplicate(it.fields, history.filter((e) => e.img));
+
+  const photoOnly = async (it) => {
+    const rec = dupRecs[it.id];
+    let img = '';
+    try { img = it.image ? await compressDataUrl(it.image) : ''; } catch { /* sin foto */ }
+    if (!img) return setMsg({ t: 'err', s: 'No se pudo preparar la foto de este comprobante.' });
+    const now = Date.now();
+    const entry = { hid: uid(), ...it.fields, egreso: parseFloat(it.fields.egreso || 0).toFixed(2), tipo: it.tipo || '', archivo: it.name, img, registeredAt: now, exported: true, exportedAt: now, file: excel?.name || '', item: rec?.item ?? null, soloFoto: true };
+    setHistory((h) => [entry, ...h]);
+    cloudSave([entry]);
+    setItems((arr) => arr.filter((x) => x.id !== it.id));
+    setMsg({ t: 'ok', s: `Foto guardada y vinculada a la fila existente del Excel (${rec?.origen || 'Excel'}). No se agregó una fila nueva. Descargue el Excel actualizado para que el N° quede con su enlace.` });
+  };
 
   // ---------- Numeración de ítems ----------
   // Cada comprobante listo recibe el siguiente ítem libre (continuando el Excel y lo ya registrado).
@@ -451,6 +469,12 @@ export default function App() {
     const k = q.trim().toLowerCase();
     return history.filter((e) => (hf === 'todos' || (hf === 'pendiente' ? !e.exported : e.exported)) && (!k || [e.numero, e.proveedor, e.concepto, e.fecha, fmtDate(e.fecha), e.egreso, e.item, e.archivo].join(' ').toLowerCase().includes(k)));
   }, [history, q, hf]);
+  const gallery = useMemo(() => {
+    const k = cq.trim().toLowerCase();
+    return history
+      .filter((e) => e.img && (!k || [e.numero, e.proveedor, e.fecha, fmtDate(e.fecha), e.item, e.egreso, e.archivo].join(' ').toLowerCase().includes(k)))
+      .sort((a, b) => b.registeredAt - a.registeredAt);
+  }, [history, cq]);
   const shownTotal = shown.reduce((s, e) => s + (parseFloat(e.egreso) || 0), 0);
   const dayKey = (ms) => { const d = new Date(ms); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
   const dayLabel = (ms) => { const s = new Date(ms).toLocaleDateString('es-PE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' }); return s.charAt(0).toUpperCase() + s.slice(1); };
@@ -504,6 +528,7 @@ export default function App() {
       </header>
 
       <main>
+        <nav className="nav" aria-label="Secciones"><a href="#historial">Historial ({history.length})</a><a href="#comprobantes">Comprobantes con foto ({history.filter((e) => e.img).length})</a></nav>
         {msg && <div className={`msg ${msg.t}`} role="status" onClick={() => setMsg(null)}>{msg.s}</div>}
         {firebaseConfig && cloudReady && !user && (
           <div className="msg warn plain">Está trabajando <b>sin cuenta</b>: sus gastos solo quedan en este dispositivo. <button className="link plain" onClick={() => setAuthOpen(true)}>Inicie sesión</button> para guardarlos en la nube, con la foto de cada comprobante, y verlos desde cualquier equipo.</div>
@@ -553,7 +578,7 @@ export default function App() {
                 <thead><tr><th>Ítem</th><th>Comprobante</th><th>Fecha</th><th>N° comprobante</th><th>Beneficiario / proveedor</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
                 <tbody>
                   {items.map((it) => (
-                    <ItemRow key={it.id} item={it} itemNo={itemNo[it.id]} dup={dups[it.id]} onChange={(p) => patch(it.id, p)} onDelete={() => setItems((a) => a.filter((x) => x.id !== it.id))} onOpen={open} onRetry={() => retry(it)} />
+                    <ItemRow key={it.id} item={it} itemNo={itemNo[it.id]} dup={dups[it.id]} photoOnly={canPhotoOnly(it)} onPhotoOnly={() => photoOnly(it)} onChange={(p) => patch(it.id, p)} onDelete={() => setItems((a) => a.filter((x) => x.id !== it.id))} onOpen={open} onRetry={() => retry(it)} />
                   ))}
                 </tbody>
               </table>
@@ -624,7 +649,7 @@ export default function App() {
                         <td data-label="Beneficiario">{e.proveedor}</td>
                         <td data-label="Concepto"><span className="concept">{e.concepto}</span></td>
                         <td data-label="Egreso" className="num">{money(e.egreso)}</td>
-                        <td data-label="Estado"><span className={`badge ${e.exported ? 'OK' : 'REVISAR'}`}>{e.exported ? 'En Excel' : 'Pendiente de descargar'}</span></td>
+                        <td data-label="Estado"><span className={`badge ${e.exported ? 'OK' : 'REVISAR'}`}>{e.exported ? (e.soloFoto ? 'En Excel (solo foto)' : 'En Excel') : 'Pendiente de descargar'}</span></td>
                         <td><button className="btn sm danger" onClick={() => removeEntry(e)}>Quitar</button></td>
                       </tr>
                     </Fragment>
@@ -633,6 +658,37 @@ export default function App() {
                 </table>
               </div>
               <p className="hint"><b>{shown.length}</b> gasto(s) · total {money(shownTotal)}. {user ? 'Guardado en su cuenta, con la foto de cada comprobante.' : 'Guardado solo en este dispositivo (inicie sesión para guardarlo en la nube).'}</p>
+            </>
+          )}
+        </section>
+
+        <section className="card" id="comprobantes">
+          <div className="sec-head">
+            <h2>Comprobantes ({gallery.length})</h2>
+            <span className={user ? 'chip ready' : 'chip loading'}>{user ? '☁ Cuenta: ' + user.email : 'Sin cuenta: solo este dispositivo'}</span>
+          </div>
+          {gallery.length === 0 ? (
+            <p className="hint">Aquí aparecerán todos los comprobantes registrados con su foto, ítem, N° y proveedor. Si un comprobante ya estaba en su Excel, use <b>SOLO GUARDAR LA FOTO</b> al subirlo para agregarlo aquí sin duplicar la fila.</p>
+          ) : (
+            <>
+              <div className="filters">
+                <input type="search" placeholder="Buscar comprobante por ítem, N°, proveedor, fecha…" value={cq} onChange={(e) => setCq(e.target.value)} />
+              </div>
+              <div className="gallery">
+                {gallery.map((e) => (
+                  <figure className="comp" key={e.hid}>
+                    <img className="cimg" src={e.img} alt={`Comprobante ${e.numero || ''}`} onClick={() => open(e.img)} />
+                    <figcaption>
+                      <div className="chead"><b className="citem">{histNo(e) ? 'Ítem ' + pad(histNo(e)) : 'Sin ítem'}</b><span className="muted">{fmtDate(e.fecha)}</span></div>
+                      <button className="linklike" onClick={() => open(e.img)}>{e.numero || 'Ver foto'}</button>
+                      <div className="cprov">{e.proveedor}</div>
+                      <div className="cmoney">{money(e.egreso)}</div>
+                      <small className="muted">Registrado {fmtStamp(e.registeredAt)}{e.soloFoto ? ' · ya estaba en el Excel' : ''}</small>
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+              {history.length > gallery.length && <p className="hint">{history.length - history.filter((e) => e.img).length} gasto(s) del historial no tienen foto (se registraron antes de que la app guardara fotos).</p>}
             </>
           )}
         </section>
