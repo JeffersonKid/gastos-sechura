@@ -1,4 +1,4 @@
-// Lectura / escritura del Excel de control de gastos con ExcelJS.
+﻿// Lectura / escritura del Excel de control de gastos con ExcelJS.
 import ExcelJS from 'exceljs';
 import { norm } from './extract.js';
 
@@ -222,7 +222,14 @@ export async function appendRecords(baseBuffer, records) {
     row.getCell(cols.numero).value = rec.numero || null;
     row.getCell(cols.numero).numFmt = '@';
     row.getCell(cols.proveedor).value = rec.proveedor || null;
-    if (cols.concepto) row.getCell(cols.concepto).value = rec.concepto || null;
+    if (cols.concepto) {
+      const cc = row.getCell(cols.concepto);
+      cc.value = rec.concepto || null;
+      cc.alignment = { ...(cc.alignment || {}), wrapText: true, vertical: 'top' };
+      const w = ws.getColumn(cols.concepto).width || 40;
+      const nLines = (rec.concepto || '').split('\n').reduce((s, l) => s + Math.max(1, Math.ceil(l.length / (w * 1.05))), 0);
+      if (nLines > 1) row.height = Math.max(row.height || 15, 15 * nLines);
+    }
     if (cols.ingresos) row.getCell(cols.ingresos).value = null;
     const eg = row.getCell(cols.egresos);
     const n = parseFloat(rec.egreso);
@@ -235,3 +242,4 @@ export async function appendRecords(baseBuffer, records) {
   const buffer = await wb.xlsx.writeBuffer();
   return { buffer, added: records.length, firstRow };
 }
+

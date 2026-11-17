@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+﻿import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { saveItem, deleteItem, allItems, setMeta, getMeta, clearAll } from './db.js';
 import { extractFields, findDuplicate } from './extract.js';
 
@@ -48,7 +48,7 @@ function ItemRow({ item, dup, onChange, onDelete, onOpen, onRetry }) {
       <td data-label="Fecha">{cell('fecha', 'date')}</td>
       <td data-label="N° comprobante">{cell('numero')}</td>
       <td data-label="Beneficiario / proveedor">{cell('proveedor')}</td>
-      <td data-label="Concepto">{cell('concepto')}</td>
+      <td data-label="Concepto">{edit ? <textarea rows={Math.max(3, (f.concepto || '').split('\n').length)} value={f.concepto || ''} onChange={(e) => set('concepto', e.target.value)} /> : <span className="concept">{f.concepto}</span>}</td>
       <td data-label="Egreso (-)" className="num">{cell('egreso', 'text', { inputMode: 'decimal' })}</td>
       <td data-label="Estado">
         <span className={`badge ${st}`}>{STATUS_LABEL[st] || st}{item.tipo ? ` · ${item.tipo}` : ''}</span>
@@ -359,3 +359,4 @@ export default function App() {
     </div>
   );
 }
+

@@ -298,7 +298,8 @@ export function extractConcept(lines) {
     if (qtyFirst && !start && items.length) { if (c && !/^[\d.,\s-]+$/.test(c)) items[items.length - 1] += ' ' + c; continue; }
     if ((c.match(/[A-Za-zÁÉÍÓÚÑ]/g) || []).length >= 3) items.push(c);
   }
-  return items.join('; ').slice(0, 300);
+  // Varios productos: una lista con puntos, un producto por línea. Uno solo: texto simple.
+  return items.length > 1 ? items.map((s) => '• ' + s.slice(0, 120)).join('\n') : (items[0] || '').slice(0, 160);
 }
 
 const UNITS = '(?:METROS?|UNIDADES|UNIDAD|UNDS?|UNID|NIU|ZZ|KGS?|KILOS?|M2|M3|ML|M|BLS|BOLSAS?|GLN|GALON(?:ES)?|PZAS?|PIEZAS?|SERV|SERVICIO|LTS?|LITROS?|CJA|CAJAS?|ROLLOS?|PAR|DOC|MLL|MILLAR|SACOS?|BALDES?|JGO|JUEGO)';
@@ -383,6 +384,7 @@ export function findDuplicate(a, others) {
   }
   return null;
 }
+
 
 
 

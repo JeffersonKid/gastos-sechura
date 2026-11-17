@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+﻿import { describe, it, expect } from 'vitest';
 import ExcelJS from 'exceljs';
 import { extractFields, parseAmount, findDuplicate } from '../src/extract.js';
 import { appendRecords, readExcel, shiftFormula } from '../src/excel.js';
@@ -216,7 +216,7 @@ TOTAL                       $/1,560.00
     expect(r.numero).toBe('FS01-8428');
     expect(r.fecha).toBe('2026-10-20');
     expect(r.egreso).toBe('1560.00');
-    expect(r.concepto).toBe('RAPIMIX MORTERO TARRAJEQ TIPO MS (MORADO); PEGAMENTO CHEMAYOLIC GRIS * 25 KIL; YESOMORROPE 08 KIL');
+    expect(r.concepto).toBe('• RAPIMIX MORTERO TARRAJEQ TIPO MS (MORADO)\n• PEGAMENTO CHEMAYOLIC GRIS * 25 KIL\n• YESOMORROPE 08 KIL');
   });
 });
 
@@ -281,5 +281,18 @@ Fecha y hora:
     const x = extractFields(TXT);
     expect(x.fields).toMatchObject({ fecha: '2026-11-16', numero: '57453935', proveedor: 'PAREDES DIAZ YOHANA ALEXHANDRA', egreso: '5500.00' });
     expect(x.warnings.join(' ')).not.toMatch(/TOTAL/);
+  });
+});
+
+
+describe('concepto en lista dentro del Excel', () => {
+  it('conserva los puntos y saltos de línea con ajuste de texto', async () => {
+    const { buffer } = await appendRecords(null, [{ fecha: '2026-11-09', numero: 'F002-1', proveedor: 'X SAC', concepto: '• CABLE 6MM2\n• TERMINAL B-T6\n• MANGA F-6', egreso: '219.80' }]);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer);
+    const c = wb.worksheets[0].getCell('E4');
+    expect(c.value).toBe('• CABLE 6MM2\n• TERMINAL B-T6\n• MANGA F-6');
+    expect(c.alignment.wrapText).toBe(true);
+    expect(wb.worksheets[0].getRow(4).height).toBeGreaterThanOrEqual(45);
   });
 });

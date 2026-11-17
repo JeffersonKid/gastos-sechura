@@ -76,3 +76,6 @@ footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 2
   td.num { text-align: left; }
   .actions .btn { flex: none; }
 }
+.concept { white-space: pre-line; display: block; }
+td textarea { width: 100%; min-width: 200px; padding: 7px; border: 1.5px solid #9db0d3; border-radius: 7px; font: inherit; resize: vertical; }
+@media (min-width: 821px) { td[data-label="Concepto"] { min-width: 260px; } }
