@@ -77,6 +77,9 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [excel, setExcel] = useState(null); // {name, buffer, info}
   const [registered, setRegistered] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [q, setQ] = useState('');
+  const [hf, setHf] = useState('todos');
   const [running, setRunning] = useState(false);
   const [ocrState, setOcrState] = useState('idle');
   const [msg, setMsg] = useState(null);
@@ -92,11 +95,12 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [its, ex, reg] = await Promise.all([allItems(), getMeta('excel'), getMeta('registered')]);
+        const [its, ex, reg, hist] = await Promise.all([allItems(), getMeta('excel'), getMeta('registered'), getMeta('history')]);
         its.forEach((i) => saved.current.set(i.id, i));
         setItems(its.map((i) => (i.status === 'processing' ? { ...i, status: 'pending' } : i)).sort((a, b) => a.createdAt - b.createdAt));
         if (ex) setExcel(ex);
         if (reg) setRegistered(reg);
+        if (hist) setHistory(hist);
       } catch (e) { console.warn('IndexedDB no disponible', e); }
       setLoaded(true);
     })();
@@ -113,6 +117,7 @@ export default function App() {
   }, [items, loaded]);
   useEffect(() => { if (loaded) setMeta('registered', registered).catch(() => {}); }, [registered, loaded]);
   useEffect(() => { if (loaded) setMeta('excel', excel).catch(() => {}); }, [excel, loaded]);
+  useEffect(() => { if (loaded) setMeta('history', history).catch(() => {}); }, [history, loaded]);
 
   // Precarga del motor OCR en segundo plano (queda en caché para uso sin conexión)
   useEffect(() => {
@@ -197,7 +202,9 @@ export default function App() {
     const incomplete = ready.filter((i) => !i.fields.fecha || !i.fields.numero || !i.fields.proveedor).length;
     const q = `¿Registrar ${ready.length} gasto(s) por ${money(total)}?` + (incomplete ? `\n${incomplete} tiene(n) campos vacíos.` : '') + (skippedDup + skippedAmt ? `\nSe omitirán ${skippedDup} duplicado(s) y ${skippedAmt} sin importe.` : '');
     if (!window.confirm(q)) return;
-    setRegistered((r) => [...r, ...ready.map((i) => ({ ...i.fields, egreso: parseFloat(i.fields.egreso).toFixed(2), tipo: i.tipo }))]);
+    const recs = ready.map((i) => ({ hid: uid(), ...i.fields, egreso: parseFloat(i.fields.egreso).toFixed(2), tipo: i.tipo }));
+    setRegistered((r) => [...r, ...recs]);
+    setHistory((h) => [...recs.map((r) => ({ ...r, registeredAt: Date.now(), exported: false })), ...h]);
     const ids = new Set(ready.map((i) => i.id));
     setItems((arr) => arr.filter((i) => !ids.has(i.id)));
     setMsg({ t: 'ok', s: `${ready.length} gasto(s) registrado(s). Descargue el Excel actualizado cuando termine.` });
@@ -229,6 +236,8 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       const info = await readExcel(buffer.slice(0));
       setExcel({ name, buffer, info });
+      const done_ = new Set(registered.map((r) => r.hid));
+      setHistory((h) => h.map((e) => (done_.has(e.hid) ? { ...e, exported: true, exportedAt: Date.now(), file: name } : e)));
       setRegistered([]);
       setMsg({ t: 'ok', s: `Descargado: ${name} (${info.count} registros). Este archivo es ahora la base de trabajo.` });
     } catch (e) { setMsg({ t: 'err', s: e.message || 'No se pudo generar el Excel.' }); }
@@ -238,8 +247,21 @@ export default function App() {
     if (!window.confirm('Se borrarán fotos, registros pendientes y el Excel cargado de este navegador. ¿Continuar?')) return;
     await clearAll();
     saved.current.clear();
-    setItems([]); setRegistered([]); setExcel(null);
+    setItems([]); setRegistered([]); setExcel(null); setHistory([]);
     setMsg({ t: 'ok', s: 'Se eliminó todo el trabajo guardado en este dispositivo.' });
+  };
+
+  const shown = useMemo(() => {
+    const k = q.trim().toLowerCase();
+    return history.filter((e) => (hf === 'todos' || (hf === 'pendiente' ? !e.exported : e.exported)) && (!k || [e.numero, e.proveedor, e.concepto, e.fecha, fmtDate(e.fecha), e.egreso].join(' ').toLowerCase().includes(k)));
+  }, [history, q, hf]);
+  const shownTotal = shown.reduce((s, e) => s + (parseFloat(e.egreso) || 0), 0);
+  const fmtStamp = (ms) => new Date(ms).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' });
+  const csv = () => {
+    const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""').replace(/\n/g, ' | ') + '"';
+    const rows = [['Registrado', 'Fecha', 'N° comprobante', 'Beneficiario/Proveedor', 'Concepto', 'Egreso (S/)', 'Estado']].concat(shown.map((e) => [fmtStamp(e.registeredAt), fmtDate(e.fecha), e.numero, e.proveedor, e.concepto, e.egreso, e.exported ? 'En Excel descargado' : 'Pendiente de descargar']));
+    const blob = new Blob([String.fromCharCode(0xfeff) + rows.map((r) => r.map(esc).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'historial_gastos_obra_sechura.csv'; document.body.appendChild(a); a.click(); a.remove();
   };
 
   const onDrop = (e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); };
@@ -332,11 +354,52 @@ export default function App() {
                   <tbody>
                     {registered.map((r, i) => (
                       <tr key={i}><td data-label="Fecha">{fmtDate(r.fecha)}</td><td data-label="N°">{r.numero}</td><td data-label="Beneficiario">{r.proveedor}</td><td data-label="Concepto">{r.concepto}</td><td data-label="Egreso" className="num">{money(r.egreso)}</td>
-                        <td><button className="btn sm danger" onClick={() => setRegistered((a) => a.filter((_, k) => k !== i))}>Quitar</button></td></tr>
+                        <td><button className="btn sm danger" onClick={() => { setHistory((h) => h.filter((e) => e.hid !== r.hid)); setRegistered((a) => a.filter((_, k) => k !== i)); }}>Quitar</button></td></tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            </>
+          )}
+        </section>
+
+        <section className="card" id="historial">
+          <div className="sec-head">
+            <h2>Historial de gastos registrados ({history.length})</h2>
+            <button className="btn" disabled={!shown.length} onClick={csv}>DESCARGAR HISTORIAL (CSV)</button>
+          </div>
+          {history.length === 0 ? (
+            <p className="hint">Aún no hay gastos registrados. Aquí aparecerá cada gasto que confirme, con la fecha y hora de registro.</p>
+          ) : (
+            <>
+              <div className="filters">
+                <input type="search" placeholder="Buscar por proveedor, N°, concepto, fecha…" value={q} onChange={(e) => setQ(e.target.value)} />
+                <select value={hf} onChange={(e) => setHf(e.target.value)}>
+                  <option value="todos">Todos</option>
+                  <option value="pendiente">Pendientes de descargar</option>
+                  <option value="excel">Ya en el Excel descargado</option>
+                </select>
+              </div>
+              <div className="tablewrap">
+                <table className="small">
+                  <thead><tr><th>Registrado</th><th>Fecha</th><th>N°</th><th>Beneficiario</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
+                  <tbody>
+                    {shown.map((e) => (
+                      <tr key={e.hid}>
+                        <td data-label="Registrado">{fmtStamp(e.registeredAt)}</td>
+                        <td data-label="Fecha">{fmtDate(e.fecha)}</td>
+                        <td data-label="N°">{e.numero}</td>
+                        <td data-label="Beneficiario">{e.proveedor}</td>
+                        <td data-label="Concepto"><span className="concept">{e.concepto}</span></td>
+                        <td data-label="Egreso" className="num">{money(e.egreso)}</td>
+                        <td data-label="Estado"><span className={`badge ${e.exported ? 'OK' : 'REVISAR'}`}>{e.exported ? 'En Excel' : 'Pendiente de descargar'}</span></td>
+                        <td><button className="btn sm danger" onClick={() => { if (window.confirm('¿Quitar este gasto del historial? (No modifica un Excel ya descargado.)')) { setHistory((h) => h.filter((x) => x.hid !== e.hid)); setRegistered((a) => a.filter((r) => r.hid !== e.hid)); } }}>Quitar</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="hint"><b>{shown.length}</b> gasto(s) · total {money(shownTotal)}. El historial queda solo en este dispositivo; no guarda las fotos.</p>
             </>
           )}
         </section>
@@ -359,4 +422,5 @@ export default function App() {
     </div>
   );
 }
+
 

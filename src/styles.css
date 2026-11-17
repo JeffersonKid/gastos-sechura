@@ -79,3 +79,4 @@ footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 2
 .concept { white-space: pre-line; display: block; }
 td textarea { width: 100%; min-width: 200px; padding: 7px; border: 1.5px solid #9db0d3; border-radius: 7px; font: inherit; resize: vertical; }
 @media (min-width: 821px) { td[data-label="Concepto"] { min-width: 260px; } }
+.filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; } .filters input, .filters select { min-height: 42px; padding: 8px 12px; border: 1.5px solid #9db0d3; border-radius: 9px; font: inherit; background: #fff; } .filters input { flex: 1 1 260px; }
