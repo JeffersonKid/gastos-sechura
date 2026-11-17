@@ -138,8 +138,8 @@ function newWorkbook() {
     c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     c.border = thin();
   });
-  h.height = 32;
-  [7, 12, 24, 34, 48, 15, 15].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  h.height = 48;
+  [7, 12, 30, 34, 48, 15, 15].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   return { wb, ws, headerRow: 3, cols: { item: 1, fecha: 2, numero: 3, proveedor: 4, concepto: 5, ingresos: 6, egresos: 7 } };
 }
 const thin = () => ({ top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
@@ -165,67 +165,32 @@ function insertRowAt(ws, at) {
   });
 }
 
-const PHOTO_SHEET = 'COMPROBANTES';
-const colLetter = (n) => {
-  let s = '';
-  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
-  return s;
-};
+const LINK_BLUE = 'FF0563C1';
+const keyNum = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9-]/g, '').replace(/^([A-Z0-9]+)-0*(\d+)$/, '$1-$2').replace(/^0+(?=\d)/, '');
 
-/** Ancho/alto de un JPEG (data URL) leyendo su cabecera. */
-export function jpegSize(dataUrl) {
-  try {
-    const b = atob(dataUrl.split(',')[1]);
-    let i = 2;
-    while (i < b.length) {
-      if (b.charCodeAt(i) !== 0xff) { i++; continue; }
-      const m = b.charCodeAt(i + 1);
-      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
-        return { h: (b.charCodeAt(i + 5) << 8) | b.charCodeAt(i + 6), w: (b.charCodeAt(i + 7) << 8) | b.charCodeAt(i + 8) };
-      }
-      i += 2 + ((b.charCodeAt(i + 2) << 8) | b.charCodeAt(i + 3));
-    }
-  } catch { /* sin medidas */ }
-  return null;
-}
-
-/**
- * Pone la foto del comprobante en la hoja COMPROBANTES y convierte el N° de la fila en un
- * enlace que lleva directo a esa foto (y la foto trae un enlace de vuelta a la fila).
- */
-function attachPhoto(wb, ws, cols, row, rec, itemLabel) {
-  if (!rec.img) return;
-  let cs = wb.getWorksheet(PHOTO_SHEET);
-  if (!cs) {
-    cs = wb.addWorksheet(PHOTO_SHEET);
-    [14, 52, 18, 26].forEach((w, i) => { cs.getColumn(i + 1).width = w; });
+/** N° de comprobante como enlace azul que abre la foto en el navegador (o texto normal si no hay enlace). */
+function setNumeroCell(cell, numero, url) {
+  const font = { ...(cell.font || {}) };
+  delete font.color;
+  delete font.underline;
+  if (url) {
+    cell.value = { text: numero || 'Ver foto', hyperlink: url, tooltip: 'Abrir la foto del comprobante' };
+    cell.font = { ...font, color: { argb: LINK_BLUE }, underline: true };
+  } else {
+    cell.value = numero || null;
+    cell.font = font;
   }
-  const start = cs.rowCount ? cs.rowCount + 2 : 1;
-  const size = jpegSize(rec.img) || { w: 800, h: 1000 };
-  const w = Math.min(640, size.w);
-  const h = Math.round((w * size.h) / size.w);
-  const hdr = cs.getRow(start);
-  hdr.getCell(1).value = `Ítem ${itemLabel}`;
-  hdr.getCell(1).font = { bold: true, size: 12, color: { argb: 'FF0B2A5B' } };
-  hdr.getCell(2).value = [rec.numero, rec.proveedor].filter(Boolean).join(' · ');
-  hdr.getCell(2).font = { bold: true };
-  hdr.getCell(4).value = { text: '← Volver al registro', hyperlink: `#'${ws.name}'!${colLetter(cols.numero)}${row.number}` };
-  hdr.getCell(4).font = { color: { argb: 'FF0563C1' }, underline: true };
-  const id = wb.addImage({ base64: rec.img, extension: 'jpeg' });
-  cs.addImage(id, { tl: { col: 0, row: start }, ext: { width: w, height: h } });
-  cs.getRow(start + Math.ceil(h / 20) + 1).getCell(1).value = ' '; // reserva el espacio ocupado por la foto
-  const c = row.getCell(cols.numero);
-  c.value = { text: rec.numero || 'Ver foto', hyperlink: `#'${PHOTO_SHEET}'!A${start}` };
-  c.font = { ...(c.font || {}), color: { argb: 'FF0563C1' }, underline: true };
 }
 
+const photoUrl = (appUrl, hid) => `${appUrl.replace(/#.*$/, '')}#foto=${hid}`;
 const padItem = (n, width) => String(n).padStart(width, '0');
 
 /**
  * Agrega `records` al final de la tabla. Parte de `baseBuffer` (Excel original) o crea uno nuevo.
  * Nunca modifica filas existentes. Devuelve { buffer, added, firstRow }.
  */
-export async function appendRecords(baseBuffer, records) {
+export async function appendRecords(baseBuffer, records, opts = {}) {
+  const { appUrl = '', history = [] } = opts;
   let wb, ws, headerRow, cols;
   if (baseBuffer) {
     wb = new ExcelJS.Workbook();
@@ -289,13 +254,27 @@ export async function appendRecords(baseBuffer, records) {
     const n = parseFloat(rec.egreso);
     eg.value = Number.isFinite(n) ? n : null;
     eg.numFmt = MONEY;
-    attachPhoto(wb, ws, cols, row, rec, itemIsNumber ? String(next) : padItem(next, width));
+    setNumeroCell(row.getCell(cols.numero), rec.numero, appUrl && rec.hid && (rec.img || rec.hasImg) ? photoUrl(appUrl, rec.hid) : '');
     row.commit?.();
     next++;
     target++;
   }
+  // Filas que ya estaban en el Excel: se enlazan si su N° coincide con un gasto del historial que tiene foto.
+  if (appUrl && history.length) {
+    const byNum = new Map();
+    for (const h of history) if (h.hid && h.img && h.numero) byNum.set(keyNum(h.numero), h.hid);
+    const last = Math.max(s.lastData + records.length, s.lastData);
+    for (let r = headerRow + 1; r <= last; r++) {
+      const c = ws.getRow(r).getCell(cols.numero);
+      if (c.value && typeof c.value === 'object' && c.value.hyperlink) continue;
+      const txt = cellText(c).trim();
+      const hid = txt && byNum.get(keyNum(txt));
+      if (hid) setNumeroCell(c, txt, photoUrl(appUrl, hid));
+    }
+  }
   const buffer = await wb.xlsx.writeBuffer();
   return { buffer, added: records.length, firstRow };
 }
+
 
 

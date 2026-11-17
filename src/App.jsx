@@ -158,6 +158,9 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [cloudReady, setCloudReady] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [synced, setSynced] = useState(false);
+  const [photoId, setPhotoId] = useState(() => (location.hash.match(/^#foto=([\w-]+)/) || [])[1] || null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const historyRef = useRef(history);
@@ -216,7 +219,7 @@ export default function App() {
         c.initCloud();
         cloud.current = c;
         setCloudReady(true);
-        unsub = c.onUser((u) => setUser(u ? { uid: u.uid, email: u.email } : null));
+        unsub = c.onUser((u) => { setUser(u ? { uid: u.uid, email: u.email } : null); setAuthChecked(true); });
       } catch (e) { console.warn('Nube no disponible', e); }
     })();
     return () => unsub && unsub();
@@ -245,6 +248,7 @@ export default function App() {
       u1 = c.subscribeGastos(user.uid, (list) => {
         list.sort((a, b) => (b.registeredAt || 0) - (a.registeredAt || 0));
         setHistory(list);
+        setSynced(true);
         setRegistered(list.filter((e) => !e.exported).sort((a, b) => a.registeredAt - b.registeredAt));
       }, (e) => setMsg({ t: 'err', s: 'No se pudo leer su cuenta: ' + (e?.code || e?.message) }));
       u2 = c.subscribeExcel(user.uid, async (d) => {
@@ -399,7 +403,7 @@ export default function App() {
     try {
       const { appendRecords, readExcel } = await import('./excel.js');
       const ordered = [...registered].sort((a, b) => a.registeredAt - b.registeredAt);
-      const { buffer } = await appendRecords(excel ? excel.buffer.slice(0) : null, ordered);
+      const { buffer } = await appendRecords(excel ? excel.buffer.slice(0) : null, ordered, { appUrl: location.origin + location.pathname, history: historyRef.current });
       const name = excel ? excel.name.replace(/(_actualizado)?\.xlsx?$/i, '') + '_actualizado.xlsx' : 'GASTOS_OBRA_SECHURA.xlsx';
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const a = document.createElement('a');
@@ -464,6 +468,19 @@ export default function App() {
   };
 
   const open = (u) => { setViewer(u); setZoom(false); };
+
+  // Enlace desde el Excel (#foto=ID): abre directamente la foto de ese comprobante
+  useEffect(() => {
+    if (!photoId || !loaded) return;
+    const done_ = () => { setPhotoId(null); window.history.replaceState(null, '', location.pathname + location.search); };
+    const e = history.find((x) => x.hid === photoId);
+    if (e && e.img) { open(e.img); done_(); return; }
+    if (!firebaseConfig) { setMsg({ t: 'warn', s: 'No se encontró la foto de ese comprobante en este dispositivo.' }); done_(); return; }
+    if (!cloudReady || !authChecked) return; // esperando a que cargue la sesión
+    if (!user) { setAuthOpen(true); setMsg({ t: 'warn', s: 'Inicie sesión con su cuenta para ver la foto del comprobante.' }); return; }
+    if (synced) { setMsg({ t: 'warn', s: 'No se encontró esa foto en su cuenta. ¿Inició sesión con la cuenta correcta?' }); done_(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoId, history, loaded, cloudReady, authChecked, user, synced]);
   const onDrop = (e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); };
   const pickRef = { one: useRef(), many: useRef(), pdf: useRef(), xls: useRef() };
   const pick = (ref, files) => { if (files?.length) addFiles(files); if (ref.current) ref.current.value = ''; };
@@ -640,4 +657,5 @@ export default function App() {
     </div>
   );
 }
+
 

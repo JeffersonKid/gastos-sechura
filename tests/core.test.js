@@ -297,33 +297,31 @@ describe('concepto en lista dentro del Excel', () => {
   });
 });
 
-describe('N° de comprobante enlazado a la foto (hoja COMPROBANTES)', () => {
-  it('crea enlace interno, la foto y el enlace de vuelta; conserva todo en una segunda descarga', async () => {
-    const { readFileSync } = await import('node:fs');
-    const img = 'data:image/jpeg;base64,' + readFileSync('tests/fixtures/yape.jpg').toString('base64');
-    const mk = (n) => ({ fecha: '2026-11-09', numero: 'F002-' + n, proveedor: 'X SAC', concepto: 'Cable', egreso: '10.00', img });
-    const first = await appendRecords(null, [mk(1), mk(2)]);
-    const second = await appendRecords(Buffer.from(first.buffer), [mk(3)]);
+describe('N° de comprobante enlazado a la foto en el navegador', () => {
+  const APP = 'https://jeffersonkid.github.io/gastos-sechura/';
+  const img = 'data:image/jpeg;base64,AAAA';
+  it('las filas nuevas y las que ya estaban en el Excel abren la foto; sin foto no hay enlace', async () => {
+    // Excel base con dos filas viejas (una con foto en el historial y otra sin)
+    const base = await sampleWorkbook(false);
+    const hist = [{ hid: 'abc123', numero: 'B001-1', img }, { hid: 'zzz', numero: 'OTRO-9', img: '' }];
+    const recs = [
+      { hid: 'n1', fecha: '2026-11-09', numero: 'F002-431', proveedor: 'X SAC', concepto: 'Cable', egreso: '10.00', img },
+      { hid: 'n2', fecha: '2026-11-10', numero: '777', proveedor: 'Y', concepto: '', egreso: '5.00', img: '' },
+    ];
+    const { buffer } = await appendRecords(base, recs, { appUrl: APP + '#foto=viejo', history: [...hist, ...recs.filter((r) => r.img)] });
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(second.buffer);
-    const main = wb.worksheets[0];
-    const photos = wb.getWorksheet('COMPROBANTES');
-    expect(photos).toBeTruthy();
-    // los tres N° son enlaces a la hoja de fotos
-    for (const [r, n] of [[4, 1], [5, 2], [6, 3]]) {
-      const v = main.getCell(`C${r}`).value;
-      expect(v.text).toBe('F002-' + n);
-      expect(v.hyperlink).toMatch(/^#'COMPROBANTES'!A\d+$/);
-    }
-    expect(photos.getImages().length).toBe(3);
-    // el enlace apunta al encabezado del bloque correcto y éste vuelve a la fila
-    const target = Number(main.getCell('C5').value.hyperlink.match(/A(\d+)$/)[1]);
-    expect(photos.getCell(`A${target}`).value).toBe('Ítem 02');
-    expect(photos.getCell(`D${target}`).value.hyperlink).toBe("#'Gastos'!C5");
-    // bloques sin superponerse
-    const t1 = Number(main.getCell('C4').value.hyperlink.match(/A(\d+)$/)[1]);
-    const t3 = Number(main.getCell('C6').value.hyperlink.match(/A(\d+)$/)[1]);
-    expect(target - t1).toBeGreaterThan(10);
-    expect(t3 - target).toBeGreaterThan(10);
+    await wb.xlsx.load(buffer);
+    const ws = wb.getWorksheet('Hoja1');
+    expect(wb.getWorksheet('COMPROBANTES')).toBeUndefined(); // ya no se incrusta nada: el Excel no engorda
+    // fila vieja B001-1 (fila 5) enlazada por coincidencia de N°
+    expect(ws.getCell('C5').value.hyperlink).toBe(APP + '#foto=abc123');
+    expect(ws.getCell('C5').font.underline).toBe(true);
+    // fila vieja sin foto en el historial: queda como estaba
+    expect(ws.getCell('C6').value).toBe('F001-2');
+    // filas nuevas
+    expect(ws.getCell('C7').value.hyperlink).toBe(APP + '#foto=n1');
+    expect(ws.getCell('C7').value.text).toBe('F002-431');
+    expect(ws.getCell('C8').value).toBe('777'); // sin foto: texto normal, sin azul
+    expect(ws.getCell('C8').font.underline).toBeFalsy();
   });
 });
