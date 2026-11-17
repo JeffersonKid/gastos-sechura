@@ -1,11 +1,15 @@
 ﻿import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { saveItem, deleteItem, allItems, setMeta, getMeta, clearAll } from './db.js';
 import { extractFields, findDuplicate } from './extract.js';
+import { firebaseConfig } from './firebase-config.js';
+import { compressDataUrl, bufToB64, b64ToBuf } from './img.js';
 
 const money = (n) => 'S/ ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (iso) => (iso ? iso.split('-').reverse().join('/') : '');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const isValidAmount = (s) => Number.isFinite(parseFloat(s)) && parseFloat(s) > 0;
+const pad = (n) => String(n).padStart(2, '0');
+const MAX_EXCEL_B64 = 900_000; // límite de Firestore: 1 MiB por documento
 
 function useObjectUrl(blob) {
   const [url, setUrl] = useState('');
@@ -35,7 +39,7 @@ function Thumb({ blob, onOpen }) {
   return url ? <img className="thumb" src={url} alt="Comprobante" onClick={() => onOpen(url)} /> : <div className="thumb empty" />;
 }
 
-function ItemRow({ item, dup, onChange, onDelete, onOpen, onRetry }) {
+function ItemRow({ item, itemNo, dup, onChange, onDelete, onOpen, onRetry }) {
   const [edit, setEdit] = useState(false);
   const f = item.fields;
   const st = item.status === 'done' ? item.result : item.status;
@@ -44,6 +48,7 @@ function ItemRow({ item, dup, onChange, onDelete, onOpen, onRetry }) {
     edit ? <input type={type} value={f[k] || ''} onChange={(e) => set(k, e.target.value)} {...extra} /> : <span>{k === 'fecha' ? fmtDate(f[k]) : k === 'egreso' ? (f[k] ? money(f[k]) : '') : f[k]}</span>;
   return (
     <tr className={`row ${st}`}>
+      <td data-label="Ítem" className="itemno">{itemNo ? <b>{pad(itemNo)}</b> : <span className="muted" title="Sin ítem hasta que tenga importe válido y no sea duplicado sin autorizar">—</span>}</td>
       <td data-label="Comprobante"><Thumb blob={item.image} onOpen={onOpen} /><div className="fname">{item.name}</div></td>
       <td data-label="Fecha">{cell('fecha', 'date')}</td>
       <td data-label="N° comprobante">{cell('numero')}</td>
@@ -72,11 +77,74 @@ function ItemRow({ item, dup, onChange, onDelete, onOpen, onRetry }) {
   );
 }
 
+const AUTH_ERRORS = {
+  'auth/invalid-credential': 'Correo o contraseña incorrectos.',
+  'auth/wrong-password': 'Correo o contraseña incorrectos.',
+  'auth/user-not-found': 'No existe una cuenta con ese correo.',
+  'auth/invalid-email': 'El correo no es válido.',
+  'auth/email-already-in-use': 'Ya existe una cuenta con ese correo. Inicie sesión.',
+  'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres.',
+  'auth/too-many-requests': 'Demasiados intentos. Espere unos minutos e inténtelo de nuevo.',
+  'auth/network-request-failed': 'Sin conexión a internet.',
+  'auth/operation-not-allowed': 'El inicio de sesión con correo no está activado en el proyecto.',
+  'auth/unauthorized-domain': 'Este sitio no está autorizado en el proyecto de Firebase.',
+};
+
+function AuthModal({ cloud, onClose, onDone }) {
+  const [mode, setMode] = useState('in');
+  const [email, setEmail] = useState('');
+  const [pass, setPass] = useState('');
+  const [ok, setOk] = useState(false);
+  const [err, setErr] = useState('');
+  const [info, setInfo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fail = (e) => setErr(AUTH_ERRORS[e?.code] || `No se pudo completar (${e?.code || e?.message || 'error'}).`);
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setErr(''); setInfo('');
+    if (mode === 'up' && !ok) return setErr('Debe aceptar el guardado de sus datos en la nube para crear la cuenta.');
+    setBusy(true);
+    try {
+      await (mode === 'up' ? cloud.signUp(email.trim(), pass) : cloud.signIn(email.trim(), pass));
+      onDone(mode === 'up');
+    } catch (e) { fail(e); }
+    setBusy(false);
+  };
+  const reset = async () => {
+    setErr(''); setInfo('');
+    if (!email.trim()) return setErr('Escriba su correo y vuelva a presionar “Olvidé mi contraseña”.');
+    try { await cloud.resetPassword(email.trim()); setInfo('Le enviamos un correo para crear una contraseña nueva (revise también Spam).'); } catch (e) { fail(e); }
+  };
+  return (
+    <div className="modal auth" onClick={onClose}>
+      <form className="authbox" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="tabs">
+          <button type="button" className={mode === 'in' ? 'on' : ''} onClick={() => { setMode('in'); setErr(''); }}>Iniciar sesión</button>
+          <button type="button" className={mode === 'up' ? 'on' : ''} onClick={() => { setMode('up'); setErr(''); }}>Crear cuenta</button>
+        </div>
+        <label>Correo<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+        <label>Contraseña<input type="password" autoComplete={mode === 'up' ? 'new-password' : 'current-password'} minLength={6} required value={pass} onChange={(e) => setPass(e.target.value)} /></label>
+        {mode === 'up' && (
+          <label className="consent">
+            <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} />
+            <span>Acepto que mis gastos registrados, la foto comprimida de cada comprobante y mi Excel se guarden en mi cuenta en Firebase (Google) para verlos desde cualquier dispositivo. La lectura OCR se sigue haciendo en mi dispositivo y nunca guardamos mi contraseña.</span>
+          </label>
+        )}
+        {err && <div className="msg err">{err}</div>}
+        {info && <div className="msg">{info}</div>}
+        <button className="btn primary" disabled={busy}>{busy ? 'Un momento…' : mode === 'up' ? 'CREAR CUENTA' : 'ENTRAR'}</button>
+        {mode === 'in' && <button type="button" className="link plain" onClick={reset}>Olvidé mi contraseña</button>}
+        <button type="button" className="link plain" onClick={onClose}>Seguir sin cuenta</button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
   const [items, setItems] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [excel, setExcel] = useState(null); // {name, buffer, info}
-  const [registered, setRegistered] = useState([]);
+  const [excel, setExcel] = useState(null); // {name, buffer, info, updatedAt}
+  const [registered, setRegistered] = useState([]); // registrados, aún no descargados en Excel
   const [history, setHistory] = useState([]);
   const [q, setQ] = useState('');
   const [hf, setHf] = useState('todos');
@@ -86,8 +154,16 @@ export default function App() {
   const [viewer, setViewer] = useState(null);
   const [zoom, setZoom] = useState(false);
   const [drag, setDrag] = useState(false);
+  const [user, setUser] = useState(null);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  const excelRef = useRef(excel);
+  excelRef.current = excel;
+  const cloud = useRef(null);
   const saved = useRef(new Map());
   const stop = useRef(false);
 
@@ -129,6 +205,78 @@ export default function App() {
     return () => clearTimeout(t);
   }, [loaded]);
 
+  // ---------- Cuentas / nube ----------
+  useEffect(() => {
+    if (!loaded || !firebaseConfig) return undefined;
+    let unsub;
+    (async () => {
+      try {
+        const c = await import('./cloud.js');
+        c.initCloud();
+        cloud.current = c;
+        setCloudReady(true);
+        unsub = c.onUser((u) => setUser(u ? { uid: u.uid, email: u.email } : null));
+      } catch (e) { console.warn('Nube no disponible', e); }
+    })();
+    return () => unsub && unsub();
+  }, [loaded]);
+
+  const wipeLocal = useCallback(async () => {
+    await clearAll();
+    saved.current.clear();
+    setItems([]); setRegistered([]); setExcel(null); setHistory([]);
+  }, []);
+
+  useEffect(() => {
+    if (!cloudReady || !user) return undefined;
+    const c = cloud.current;
+    let u1, u2, dead = false;
+    (async () => {
+      const owner = await getMeta('owner');
+      if (owner && owner !== user.uid) await wipeLocal(); // datos locales de otra persona: no se mezclan
+      else if (owner !== user.uid && historyRef.current.length) {
+        // trabajo hecho sin cuenta: se sube a la cuenta que inicia sesión
+        for (const e of historyRef.current) c.saveGasto(user.uid, e).catch(() => {});
+        setMsg({ t: 'ok', s: `Se guardaron en su cuenta ${historyRef.current.length} gasto(s) que había registrado en este dispositivo.` });
+      }
+      if (dead) return;
+      await setMeta('owner', user.uid);
+      u1 = c.subscribeGastos(user.uid, (list) => {
+        list.sort((a, b) => (b.registeredAt || 0) - (a.registeredAt || 0));
+        setHistory(list);
+        setRegistered(list.filter((e) => !e.exported).sort((a, b) => a.registeredAt - b.registeredAt));
+      }, (e) => setMsg({ t: 'err', s: 'No se pudo leer su cuenta: ' + (e?.code || e?.message) }));
+      u2 = c.subscribeExcel(user.uid, async (d) => {
+        const cur = excelRef.current;
+        if (!d) { if (cur) pushExcel(cur); return; }
+        if (cur && (cur.updatedAt || 0) >= d.updatedAt) return;
+        try {
+          const { readExcel } = await import('./excel.js');
+          const buffer = b64ToBuf(d.data);
+          setExcel({ name: d.name, buffer, info: await readExcel(buffer.slice(0)), updatedAt: d.updatedAt });
+        } catch (e) { console.warn('Excel de la nube ilegible', e); }
+      }, () => {});
+    })();
+    return () => { dead = true; u1 && u1(); u2 && u2(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudReady, user?.uid]);
+
+  const pushExcel = (x) => {
+    if (!user || !cloud.current) return;
+    const data = bufToB64(x.buffer);
+    if (data.length > MAX_EXCEL_B64) return setMsg({ t: 'warn', s: 'Su Excel es demasiado grande para guardarse en la nube (máx. ~650 KB); quedará solo en este dispositivo.' });
+    cloud.current.saveExcel(user.uid, { name: x.name, data, updatedAt: x.updatedAt || Date.now() }).catch(() => {});
+  };
+  const cloudSave = (entries) => user && cloud.current && entries.forEach((e) => cloud.current.saveGasto(user.uid, e).catch((er) => setMsg({ t: 'err', s: 'No se pudo guardar en la nube: ' + (er?.code || er?.message) })));
+
+  const logout = async () => {
+    if (!window.confirm('Se cerrará la sesión y se quitarán de este dispositivo los datos locales (siguen guardados en su cuenta). ¿Continuar?')) return;
+    await cloud.current.signOut();
+    await wipeLocal();
+    setUser(null);
+    setMsg({ t: 'ok', s: 'Sesión cerrada. Este dispositivo quedó limpio.' });
+  };
+
   const patch = useCallback((id, p) => setItems((arr) => arr.map((i) => (i.id === id ? { ...i, ...p } : i))), []);
 
   const addFiles = (files) => {
@@ -163,15 +311,13 @@ export default function App() {
     setRunning(false);
   };
 
-  // Un archivo pendiente restaurado tras recarga ya no tiene `file` (no se guarda el original): se marca para resubir
   const orphan = items.filter((i) => i.status === 'pending' && !i.file);
-
   const retry = (it) => (it.file ? patch(it.id, { status: 'pending', error: null }) : setMsg({ t: 'warn', s: `Para reintentar "${it.name}", elimínelo y vuelva a subirlo.` }));
 
-  // Duplicados: contra Excel importado, registrados y otros de la lista
+  // Duplicados: contra el Excel importado, el historial y otros de la lista
   const dups = useMemo(() => {
     const out = {};
-    const base = [...(excel?.info?.records || []), ...registered.map((r) => ({ ...r, origen: 'registrado en esta sesión' }))];
+    const base = [...(excel?.info?.records || []), ...history.map((r) => ({ ...r, origen: `historial (registrado el ${new Date(r.registeredAt).toLocaleDateString('es-PE')})` }))];
     const seen = [];
     for (const it of items) {
       if (it.status !== 'done') continue;
@@ -180,7 +326,25 @@ export default function App() {
       seen.push({ ...it.fields, origen: `otro comprobante de la lista (${it.name})` });
     }
     return out;
-  }, [items, excel, registered]);
+  }, [items, excel, history]);
+
+  // ---------- Numeración de ítems ----------
+  // Cada comprobante listo recibe el siguiente ítem libre (continuando el Excel y lo ya registrado).
+  const baseItem = excel?.info?.nextItem ?? 1;
+  const eligible = (i) => i.status === 'done' && isValidAmount(i.fields.egreso) && (!dups[i.id] || i.dupOk);
+  const itemNo = useMemo(() => {
+    const m = {};
+    let n = baseItem + registered.length;
+    for (const i of items) if (eligible(i)) m[i.id] = n++;
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, dups, baseItem, registered.length]);
+  const pendNo = useMemo(() => {
+    const m = {};
+    [...registered].sort((a, b) => a.registeredAt - b.registeredAt).forEach((r, k) => { m[r.hid] = baseItem + k; });
+    return m;
+  }, [registered, baseItem]);
+  const histNo = (e) => (e.exported ? e.item : pendNo[e.hid]);
 
   const done = items.filter((i) => i.status === 'done');
   const stats = {
@@ -193,21 +357,28 @@ export default function App() {
   const acumulado = (excel?.info?.total || 0) + registered.reduce((s, r) => s + (parseFloat(r.egreso) || 0), 0);
   const progressPct = stats.total ? Math.round(((stats.procesados + stats.errores) / stats.total) * 100) : 0;
 
-  const confirm_ = () => {
-    const ready = done.filter((i) => isValidAmount(i.fields.egreso) && (!dups[i.id] || i.dupOk));
+  const confirm_ = async () => {
+    const ready = items.filter(eligible);
     const skippedDup = done.filter((i) => dups[i.id] && !i.dupOk).length;
     const skippedAmt = done.filter((i) => !isValidAmount(i.fields.egreso)).length;
     if (!ready.length) return setMsg({ t: 'warn', s: `No hay comprobantes listos para registrar (${skippedDup} duplicado(s) sin autorizar, ${skippedAmt} sin importe válido).` });
     const total = ready.reduce((s, i) => s + parseFloat(i.fields.egreso), 0);
     const incomplete = ready.filter((i) => !i.fields.fecha || !i.fields.numero || !i.fields.proveedor).length;
-    const q = `¿Registrar ${ready.length} gasto(s) por ${money(total)}?` + (incomplete ? `\n${incomplete} tiene(n) campos vacíos.` : '') + (skippedDup + skippedAmt ? `\nSe omitirán ${skippedDup} duplicado(s) y ${skippedAmt} sin importe.` : '');
-    if (!window.confirm(q)) return;
-    const recs = ready.map((i) => ({ hid: uid(), ...i.fields, egreso: parseFloat(i.fields.egreso).toFixed(2), tipo: i.tipo }));
+    const q_ = `¿Registrar ${ready.length} gasto(s) por ${money(total)}?` + (incomplete ? `\n${incomplete} tiene(n) campos vacíos.` : '') + (skippedDup + skippedAmt ? `\nSe omitirán ${skippedDup} duplicado(s) y ${skippedAmt} sin importe.` : '');
+    if (!window.confirm(q_)) return;
+    const now = Date.now();
+    const recs = [];
+    for (const [k, i] of ready.entries()) {
+      let img = '';
+      try { img = i.image ? await compressDataUrl(i.image) : ''; } catch { /* sin foto */ }
+      recs.push({ hid: uid(), ...i.fields, egreso: parseFloat(i.fields.egreso).toFixed(2), tipo: i.tipo || '', archivo: i.name, img, registeredAt: now + k, exported: false });
+    }
     setRegistered((r) => [...r, ...recs]);
-    setHistory((h) => [...recs.map((r) => ({ ...r, registeredAt: Date.now(), exported: false })), ...h]);
+    setHistory((h) => [...recs.slice().reverse(), ...h]);
+    cloudSave(recs);
     const ids = new Set(ready.map((i) => i.id));
     setItems((arr) => arr.filter((i) => !ids.has(i.id)));
-    setMsg({ t: 'ok', s: `${ready.length} gasto(s) registrado(s). Descargue el Excel actualizado cuando termine.` });
+    setMsg({ t: 'ok', s: `${ready.length} gasto(s) registrado(s) con su foto e ítem ${pad(baseItem + registered.length)}–${pad(baseItem + registered.length + ready.length - 1)}. Descargue el Excel actualizado cuando termine.` });
   };
 
   const importExcel = async (file) => {
@@ -216,15 +387,18 @@ export default function App() {
       const { readExcel } = await import('./excel.js');
       const buffer = await file.arrayBuffer();
       const info = await readExcel(buffer.slice(0));
-      setExcel({ name: file.name, buffer, info });
-      setMsg({ t: 'ok', s: `Excel importado: ${info.count} registro(s) previos, total ${money(info.total)}. Próximo ítem: ${String(info.nextItem).padStart(2, '0')}.` });
+      const x = { name: file.name, buffer, info, updatedAt: Date.now() };
+      setExcel(x);
+      pushExcel(x);
+      setMsg({ t: 'ok', s: `Excel importado: ${info.count} registro(s) previos, total ${money(info.total)}. Próximo ítem: ${pad(info.nextItem)}.` });
     } catch (e) { setMsg({ t: 'err', s: e.message || 'No se pudo leer el Excel.' }); }
   };
 
   const download = async () => {
     try {
       const { appendRecords, readExcel } = await import('./excel.js');
-      const { buffer } = await appendRecords(excel ? excel.buffer.slice(0) : null, registered);
+      const ordered = [...registered].sort((a, b) => a.registeredAt - b.registeredAt);
+      const { buffer } = await appendRecords(excel ? excel.buffer.slice(0) : null, ordered);
       const name = excel ? excel.name.replace(/(_actualizado)?\.xlsx?$/i, '') + '_actualizado.xlsx' : 'GASTOS_OBRA_SECHURA.xlsx';
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const a = document.createElement('a');
@@ -235,16 +409,33 @@ export default function App() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       const info = await readExcel(buffer.slice(0));
-      setExcel({ name, buffer, info });
-      const done_ = new Set(registered.map((r) => r.hid));
-      setHistory((h) => h.map((e) => (done_.has(e.hid) ? { ...e, exported: true, exportedAt: Date.now(), file: name } : e)));
+      const x = { name, buffer, info, updatedAt: Date.now() };
+      setExcel(x);
+      pushExcel(x);
+      const mark = new Map(ordered.map((r, k) => [r.hid, baseItem + k]));
+      const now = Date.now();
+      const updated = history.filter((e) => mark.has(e.hid)).map((e) => ({ ...e, exported: true, exportedAt: now, file: name, item: mark.get(e.hid) }));
+      setHistory((h) => h.map((e) => updated.find((u) => u.hid === e.hid) || e));
+      cloudSave(updated);
       setRegistered([]);
       setMsg({ t: 'ok', s: `Descargado: ${name} (${info.count} registros). Este archivo es ahora la base de trabajo.` });
     } catch (e) { setMsg({ t: 'err', s: e.message || 'No se pudo generar el Excel.' }); }
   };
 
+  const removeEntry = (e) => {
+    if (!window.confirm('¿Quitar este gasto del historial? (No modifica un Excel ya descargado.)')) return;
+    setHistory((h) => h.filter((x) => x.hid !== e.hid));
+    setRegistered((a) => a.filter((r) => r.hid !== e.hid));
+    if (user && cloud.current) cloud.current.deleteGasto(user.uid, e.hid).catch(() => {});
+  };
+
   const wipe = async () => {
-    if (!window.confirm('Se borrarán fotos, registros pendientes y el Excel cargado de este navegador. ¿Continuar?')) return;
+    if (user) {
+      if (!window.confirm('Se borrarán los comprobantes pendientes de revisar en este dispositivo. Su historial y Excel guardados en la cuenta no se tocan. ¿Continuar?')) return;
+      setItems([]);
+      return setMsg({ t: 'ok', s: 'Se limpiaron los comprobantes pendientes.' });
+    }
+    if (!window.confirm('Se borrarán fotos, registros, historial y el Excel cargado de este navegador. ¿Continuar?')) return;
     await clearAll();
     saved.current.clear();
     setItems([]); setRegistered([]); setExcel(null); setHistory([]);
@@ -253,17 +444,18 @@ export default function App() {
 
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
-    return history.filter((e) => (hf === 'todos' || (hf === 'pendiente' ? !e.exported : e.exported)) && (!k || [e.numero, e.proveedor, e.concepto, e.fecha, fmtDate(e.fecha), e.egreso].join(' ').toLowerCase().includes(k)));
+    return history.filter((e) => (hf === 'todos' || (hf === 'pendiente' ? !e.exported : e.exported)) && (!k || [e.numero, e.proveedor, e.concepto, e.fecha, fmtDate(e.fecha), e.egreso, e.item, e.archivo].join(' ').toLowerCase().includes(k)));
   }, [history, q, hf]);
   const shownTotal = shown.reduce((s, e) => s + (parseFloat(e.egreso) || 0), 0);
   const fmtStamp = (ms) => new Date(ms).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' });
   const csv = () => {
     const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""').replace(/\n/g, ' | ') + '"';
-    const rows = [['Registrado', 'Fecha', 'N° comprobante', 'Beneficiario/Proveedor', 'Concepto', 'Egreso (S/)', 'Estado']].concat(shown.map((e) => [fmtStamp(e.registeredAt), fmtDate(e.fecha), e.numero, e.proveedor, e.concepto, e.egreso, e.exported ? 'En Excel descargado' : 'Pendiente de descargar']));
+    const rows = [['Ítem', 'Registrado', 'Fecha', 'N° comprobante', 'Beneficiario/Proveedor', 'Concepto', 'Egreso (S/)', 'Estado']].concat(shown.map((e) => [histNo(e) ? pad(histNo(e)) : '', fmtStamp(e.registeredAt), fmtDate(e.fecha), e.numero, e.proveedor, e.concepto, e.egreso, e.exported ? 'En Excel descargado' : 'Pendiente de descargar']));
     const blob = new Blob([String.fromCharCode(0xfeff) + rows.map((r) => r.map(esc).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'historial_gastos_obra_sechura.csv'; document.body.appendChild(a); a.click(); a.remove();
   };
 
+  const open = (u) => { setViewer(u); setZoom(false); };
   const onDrop = (e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); };
   const pickRef = { one: useRef(), many: useRef(), pdf: useRef(), xls: useRef() };
   const pick = (ref, files) => { if (files?.length) addFiles(files); if (ref.current) ref.current.value = ''; };
@@ -276,13 +468,21 @@ export default function App() {
           <h1>CONTROL DE GASTOS – OBRA SECHURA</h1>
           <p>Fotografíe comprobantes, revise los datos y descargue su Excel actualizado.</p>
         </div>
-        <span className={`chip ${ocrState}`} title="El OCR se ejecuta en este dispositivo">
-          {{ idle: 'OCR en espera', loading: 'Preparando OCR…', ready: 'OCR listo · sin conexión', error: 'OCR no disponible (¿primera carga sin internet?)' }[ocrState]}
-        </span>
+        <div className="hdr-right">
+          <span className={`chip ${ocrState}`} title="El OCR se ejecuta en este dispositivo">
+            {{ idle: 'OCR en espera', loading: 'Preparando OCR…', ready: 'OCR listo · sin conexión', error: 'OCR no disponible (¿primera carga sin internet?)' }[ocrState]}
+          </span>
+          {firebaseConfig && cloudReady && (user
+            ? <span className="acct"><span className="chip ready" title={user.email}>☁ {user.email}</span><button className="btn sm" onClick={logout}>Cerrar sesión</button></span>
+            : <button className="btn sm primary" onClick={() => setAuthOpen(true)}>INICIAR SESIÓN / CREAR CUENTA</button>)}
+        </div>
       </header>
 
       <main>
         {msg && <div className={`msg ${msg.t}`} role="status" onClick={() => setMsg(null)}>{msg.s}</div>}
+        {firebaseConfig && cloudReady && !user && (
+          <div className="msg warn plain">Está trabajando <b>sin cuenta</b>: sus gastos solo quedan en este dispositivo. <button className="link plain" onClick={() => setAuthOpen(true)}>Inicie sesión</button> para guardarlos en la nube, con la foto de cada comprobante, y verlos desde cualquier equipo.</div>
+        )}
 
         <section className="card">
           <div className={`drop ${drag ? 'over' : ''}`} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={onDrop}>
@@ -305,7 +505,7 @@ export default function App() {
           {(running || stats.total > 0) && (
             <div className="progress" aria-label="Progreso"><i style={{ width: `${progressPct}%` }} /><span>{progressPct}%</span></div>
           )}
-          {orphan.length > 0 && !running && <div className="msg warn">{orphan.length} archivo(s) quedaron en cola antes de recargar la página y deben subirse de nuevo (las fotos originales no se guardan hasta ser procesadas). <button className="btn sm" onClick={() => setItems((a) => a.filter((i) => !(i.status === 'pending' && !i.file)))}>Quitar de la lista</button></div>}
+          {orphan.length > 0 && !running && <div className="msg warn">{orphan.length} archivo(s) quedaron en cola antes de recargar la página y deben subirse de nuevo. <button className="btn sm" onClick={() => setItems((a) => a.filter((i) => !(i.status === 'pending' && !i.file)))}>Quitar de la lista</button></div>}
         </section>
 
         <section className="stats">
@@ -325,21 +525,21 @@ export default function App() {
             </div>
             <div className="tablewrap">
               <table>
-                <thead><tr><th>Comprobante</th><th>Fecha</th><th>N° comprobante</th><th>Beneficiario / proveedor</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
+                <thead><tr><th>Ítem</th><th>Comprobante</th><th>Fecha</th><th>N° comprobante</th><th>Beneficiario / proveedor</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
                 <tbody>
                   {items.map((it) => (
-                    <ItemRow key={it.id} item={it} dup={dups[it.id]} onChange={(p) => patch(it.id, p)} onDelete={() => setItems((a) => a.filter((x) => x.id !== it.id))} onOpen={(u) => { setViewer(u); setZoom(false); }} onRetry={() => retry(it)} />
+                    <ItemRow key={it.id} item={it} itemNo={itemNo[it.id]} dup={dups[it.id]} onChange={(p) => patch(it.id, p)} onDelete={() => setItems((a) => a.filter((x) => x.id !== it.id))} onOpen={open} onRetry={() => retry(it)} />
                   ))}
                 </tbody>
               </table>
             </div>
-            <p className="hint">El OCR puede equivocarse: compruebe cada dato con la foto (clic en la miniatura para ampliarla). Nada se registra hasta que usted confirme.</p>
+            <p className="hint">Cada comprobante recibe su número de ítem (el mismo que llevará en el Excel) y su foto se guarda con él al registrar. El OCR puede equivocarse: compruebe cada dato con la foto. Nada se registra hasta que usted confirme.</p>
           </section>
         )}
 
         <section className="card">
           <div className="sec-head"><h2>Excel de control</h2></div>
-          <p className="hint">{excel ? <>Base: <b>{excel.name}</b> · {excel.info.count} registros · total {money(excel.info.total)} · próximo ítem {String(excel.info.nextItem).padStart(2, '0')}</> : 'Sin Excel importado: se generará uno nuevo con la estructura “GASTOS REALIZADOS EN OBRA SECHURA”.'}</p>
+          <p className="hint">{excel ? <>Base: <b>{excel.name}</b> · {excel.info.count} registros · total {money(excel.info.total)} · próximo ítem {pad(excel.info.nextItem)}</> : 'Sin Excel importado: se generará uno nuevo con la estructura “GASTOS REALIZADOS EN OBRA SECHURA”.'}</p>
           <div className="btns">
             <button className="btn" onClick={() => pickRef.xls.current.click()}>IMPORTAR EXCEL</button>
             <input ref={pickRef.xls} hidden type="file" accept=".xlsx" onChange={(e) => { importExcel(e.target.files[0]); e.target.value = ''; }} />
@@ -350,11 +550,11 @@ export default function App() {
               <h3>Gastos registrados pendientes de descargar ({registered.length})</h3>
               <div className="tablewrap">
                 <table className="small">
-                  <thead><tr><th>Fecha</th><th>N°</th><th>Beneficiario</th><th>Concepto</th><th>Egreso (-)</th><th></th></tr></thead>
+                  <thead><tr><th>Ítem</th><th>Fecha</th><th>N°</th><th>Beneficiario</th><th>Concepto</th><th>Egreso (-)</th><th></th></tr></thead>
                   <tbody>
-                    {registered.map((r, i) => (
-                      <tr key={i}><td data-label="Fecha">{fmtDate(r.fecha)}</td><td data-label="N°">{r.numero}</td><td data-label="Beneficiario">{r.proveedor}</td><td data-label="Concepto">{r.concepto}</td><td data-label="Egreso" className="num">{money(r.egreso)}</td>
-                        <td><button className="btn sm danger" onClick={() => { setHistory((h) => h.filter((e) => e.hid !== r.hid)); setRegistered((a) => a.filter((_, k) => k !== i)); }}>Quitar</button></td></tr>
+                    {[...registered].sort((a, b) => a.registeredAt - b.registeredAt).map((r) => (
+                      <tr key={r.hid}><td data-label="Ítem"><b>{pad(pendNo[r.hid])}</b></td><td data-label="Fecha">{fmtDate(r.fecha)}</td><td data-label="N°">{r.numero}</td><td data-label="Beneficiario">{r.proveedor}</td><td data-label="Concepto"><span className="concept">{r.concepto}</span></td><td data-label="Egreso" className="num">{money(r.egreso)}</td>
+                        <td><button className="btn sm danger" onClick={() => removeEntry(r)}>Quitar</button></td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -369,11 +569,11 @@ export default function App() {
             <button className="btn" disabled={!shown.length} onClick={csv}>DESCARGAR HISTORIAL (CSV)</button>
           </div>
           {history.length === 0 ? (
-            <p className="hint">Aún no hay gastos registrados. Aquí aparecerá cada gasto que confirme, con la fecha y hora de registro.</p>
+            <p className="hint">Aún no hay gastos registrados. Aquí aparecerá cada gasto que confirme, con su ítem, su foto y la fecha y hora de registro.</p>
           ) : (
             <>
               <div className="filters">
-                <input type="search" placeholder="Buscar por proveedor, N°, concepto, fecha…" value={q} onChange={(e) => setQ(e.target.value)} />
+                <input type="search" placeholder="Buscar por ítem, proveedor, N°, concepto, fecha…" value={q} onChange={(e) => setQ(e.target.value)} />
                 <select value={hf} onChange={(e) => setHf(e.target.value)}>
                   <option value="todos">Todos</option>
                   <option value="pendiente">Pendientes de descargar</option>
@@ -382,10 +582,12 @@ export default function App() {
               </div>
               <div className="tablewrap">
                 <table className="small">
-                  <thead><tr><th>Registrado</th><th>Fecha</th><th>N°</th><th>Beneficiario</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
+                  <thead><tr><th>Ítem</th><th>Foto</th><th>Registrado</th><th>Fecha</th><th>N°</th><th>Beneficiario</th><th>Concepto</th><th>Egreso (-)</th><th>Estado</th><th></th></tr></thead>
                   <tbody>
                     {shown.map((e) => (
                       <tr key={e.hid}>
+                        <td data-label="Ítem" className="itemno"><b>{histNo(e) ? pad(histNo(e)) : '—'}</b></td>
+                        <td data-label="Foto">{e.img ? <img className="thumb" src={e.img} alt={`Comprobante ítem ${histNo(e) ? pad(histNo(e)) : ''}`} onClick={() => open(e.img)} /> : <span className="muted">sin foto</span>}</td>
                         <td data-label="Registrado">{fmtStamp(e.registeredAt)}</td>
                         <td data-label="Fecha">{fmtDate(e.fecha)}</td>
                         <td data-label="N°">{e.numero}</td>
@@ -393,22 +595,24 @@ export default function App() {
                         <td data-label="Concepto"><span className="concept">{e.concepto}</span></td>
                         <td data-label="Egreso" className="num">{money(e.egreso)}</td>
                         <td data-label="Estado"><span className={`badge ${e.exported ? 'OK' : 'REVISAR'}`}>{e.exported ? 'En Excel' : 'Pendiente de descargar'}</span></td>
-                        <td><button className="btn sm danger" onClick={() => { if (window.confirm('¿Quitar este gasto del historial? (No modifica un Excel ya descargado.)')) { setHistory((h) => h.filter((x) => x.hid !== e.hid)); setRegistered((a) => a.filter((r) => r.hid !== e.hid)); } }}>Quitar</button></td>
+                        <td><button className="btn sm danger" onClick={() => removeEntry(e)}>Quitar</button></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <p className="hint"><b>{shown.length}</b> gasto(s) · total {money(shownTotal)}. El historial queda solo en este dispositivo; no guarda las fotos.</p>
+              <p className="hint"><b>{shown.length}</b> gasto(s) · total {money(shownTotal)}. {user ? 'Guardado en su cuenta, con la foto de cada comprobante.' : 'Guardado solo en este dispositivo (inicie sesión para guardarlo en la nube).'}</p>
             </>
           )}
         </section>
 
         <footer>
-          <p>🔒 Todo se procesa en su dispositivo. Las fotos y el Excel no se envían a ningún servidor; se guardan solo en este navegador.</p>
-          <button className="link" onClick={wipe}>Borrar todo el trabajo guardado en este dispositivo</button>
+          <p>🔒 La lectura de comprobantes (OCR) se hace en su dispositivo. {user ? 'Con su sesión iniciada, los gastos registrados, la foto comprimida de cada comprobante y su Excel se guardan en su cuenta; nadie más los ve.' : 'Sin cuenta, las fotos y el Excel no salen de este navegador.'}</p>
+          <button className="link" onClick={wipe}>{user ? 'Limpiar comprobantes pendientes de este dispositivo' : 'Borrar todo el trabajo guardado en este dispositivo'}</button>
         </footer>
       </main>
+
+      {authOpen && <AuthModal cloud={cloud.current} onClose={() => setAuthOpen(false)} onDone={(created) => { setAuthOpen(false); setMsg({ t: 'ok', s: created ? 'Cuenta creada. Su trabajo ahora se guarda en la nube.' : 'Sesión iniciada. Se cargó su historial.' }); }} />}
 
       {viewer && (
         <div className="modal" onClick={() => setViewer(null)}>
@@ -422,5 +626,3 @@ export default function App() {
     </div>
   );
 }
-
-

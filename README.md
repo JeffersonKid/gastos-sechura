@@ -1,4 +1,4 @@
-# CONTROL DE GASTOS – OBRA SECHURA
+﻿# CONTROL DE GASTOS – OBRA SECHURA
 
 Aplicación web independiente (React + Vite). **Sin servidor, sin claves API, sin Claude.** Todo corre en el navegador de cada persona:
 
@@ -64,3 +64,29 @@ Edite el código, haga `git commit` y `git push` a `main`: GitHub vuelve a publi
 - Si el Excel tiene una fila TOTAL/SALDO debajo de los datos, los nuevos registros se insertan encima y se extienden las sumas simples (`SUM(G5:G40)`).
 - Las fotos se guardan en el navegador solo mientras están pendientes de revisión; al confirmar se borran. Borrar los datos del navegador o usar modo privado elimina el trabajo pendiente: descargue el Excel con frecuencia.
 - iPhone/Safari puede borrar datos de sitios que no se usan por varias semanas.
+
+## Cuentas y guardado en la nube (Firebase)
+
+- Proyecto Firebase: `gastos-sechura` (plan gratuito Spark). La configuración pública está en `src/firebase-config.js` (no son secretos).
+- **Authentication:** correo y contraseña. Dominios autorizados: `localhost`, `jeffersonkid.github.io` (agregue su dominio si publica en otro sitio: Authentication → Configuración → Dominios autorizados).
+- **Firestore** (modo producción) con estas reglas: cada persona solo accede a `users/{su uid}/...`
+
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
+```
+
+- Qué se guarda en la cuenta (solo con sesión iniciada y aceptación al crear la cuenta): cada gasto registrado (fecha, N°, beneficiario, concepto, egreso, ítem), **la foto comprimida del comprobante** (JPEG ~1200 px, dentro del mismo documento) y el Excel base (si pesa menos de ~650 KB). Los comprobantes que aún no se confirman quedan solo en el dispositivo.
+- Sin sesión, todo sigue funcionando en modo local como antes.
+- Al cerrar sesión se limpian los datos locales del dispositivo (siguen en la cuenta).
+- Cuota gratuita de Firestore (1 GiB, 50 mil lecturas y 20 mil escrituras por día): alcanza para miles de comprobantes; puede cambiar. Firebase Storage ya no es gratuito sin tarjeta, por eso las fotos van comprimidas en Firestore.
+- Para cambiar de proyecto Firebase: pegue su propia configuración en `src/firebase-config.js`.
+
+## Ítems
+Cada comprobante listo recibe su número de ítem al cargarlo (continúa el último ítem del Excel y de lo ya registrado). Es el mismo que se escribe en el Excel y queda guardado junto a su foto en el historial.
